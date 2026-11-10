@@ -365,7 +365,8 @@ class MobileQuizView(QWidget):
                 card.set_state("picked" if card.opt_key in self._selected else "normal")
             self.statsChanged.emit()
         else:
-            self.submit([key])
+            return self.submit([key])
+        return None
 
     def submit(self, selection=None):
         """提交判定；已判定或无选择时返回 None。答对返回 True，答错返回 False。"""

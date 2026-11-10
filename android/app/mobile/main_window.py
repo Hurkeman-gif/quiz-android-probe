@@ -1,29 +1,38 @@
 # -*- coding: utf-8 -*-
-"""移动端主窗口：顶部信息条 + 答题视图 + 底部导航（上一题/提交/下一题）。
+"""移动端主窗口：顶部信息条 + 答题/完成页（QStackedWidget） + 底部操作栏。
 
 约束：
-- 题库只读，本窗口不写题库、不写 progress.db、不写错题本、不写历史记录；
+- 题库只读，本窗口只读写 progress.db（普通练习进度），不写题库、不写错题本；
 - 判定与统计全部走 app.session.PracticeSession，界面只负责展示；
-- 答对约 0.8 秒自动下一题；答错不自动跳，必须手动点「下一题」。
+- 答对约 0.8 秒自动跳到下一道未答题；答错不自动跳，必须手动点「下一题」；
+- 手动提交（提前交卷）只把未答题标记为强制判错，绝不写错题本；
+- 进度保存时机：每次提交答案后、手动提交后、切换题型前、退到后台/关闭窗口。
 """
+import os
 import traceback
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import database
+from .. import database, progress_store
 from ..models import TYPE_LABELS
-from ..session import MODE_NORMAL, PracticeSession
+from ..session import MODE_NORMAL, VIEW_FINISH, VIEW_QUIZ, PracticeSession
+from .finish_view import FinishView
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
 
 DELAY_CORRECT_MS = 800
+
+MANUAL_SUBMIT_TIP = "未作答题目将按错误计入本次成绩，但不会加入错题本。是否提交？"
 
 MOBILE_QSS = """
 QWidget#mobileRoot {
@@ -114,9 +123,9 @@ QPushButton#navBtn:disabled {
     background: #F9FAFB;
 }
 QPushButton#submitBtn {
-    min-height: 48px;
+    min-height: 44px;
     border-radius: 10px;
-    font-size: 14pt;
+    font-size: 13pt;
     font-weight: 700;
     background: #2563EB;
     color: #FFFFFF;
@@ -125,6 +134,65 @@ QPushButton#submitBtn {
 QPushButton#submitBtn:disabled {
     background: #BFDBFE;
     color: #EFF6FF;
+}
+QPushButton#manualBtn {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 13pt;
+    font-weight: 600;
+    background: #FFFBEB;
+    color: #B45309;
+    border: 1px solid #FCD34D;
+}
+QPushButton#manualBtn:pressed {
+    background: #FEF3C7;
+}
+QPushButton#manualBtn:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+}
+/* 完成页 */
+QWidget#finishView {
+    background: #F5F7FA;
+}
+#finishTitle {
+    font-size: 24pt;
+    font-weight: 700;
+    color: #15803D;
+}
+#finishStat {
+    font-size: 13pt;
+    color: #374151;
+}
+#finishStatStrong {
+    font-size: 15pt;
+    font-weight: 700;
+    color: #2563EB;
+}
+QPushButton#restartBtn {
+    min-height: 50px;
+    border-radius: 12px;
+    font-size: 14pt;
+    font-weight: 700;
+    background: #DC2626;
+    color: #FFFFFF;
+    border: none;
+}
+QPushButton#restartBtn:pressed {
+    background: #B91C1C;
+}
+QPushButton#reviewBtn {
+    min-height: 50px;
+    border-radius: 12px;
+    font-size: 14pt;
+    font-weight: 700;
+    background: #2563EB;
+    color: #FFFFFF;
+    border: none;
+}
+QPushButton#reviewBtn:pressed {
+    background: #1D4ED8;
 }
 /* 选项卡片：内边距由 OptionCard 的布局 margins 控制，这里只管底色与边框 */
 QPushButton#optionCard {
@@ -184,6 +252,9 @@ QLabel#resultLabel {
 QLabel#resultLabel[state="correct"] {
     color: #15803D;
 }
+QLabel[state="wrong"] {
+    color: #DC2626;
+}
 QLabel#resultLabel[state="wrong"] {
     color: #DC2626;
 }
@@ -197,7 +268,7 @@ QLabel#explainTitle {
 
 
 class MobileMainWindow(QWidget):
-    """移动端主窗口：信息条 + 单题视图 + 底部操作栏。"""
+    """移动端主窗口：信息条 + 答题页/完成页 + 底部操作栏。"""
 
     TYPE_ORDER = ("single", "multiple", "judge")
 
@@ -209,15 +280,22 @@ class MobileMainWindow(QWidget):
         self.session = None
         self.set_name = None
         self.current_type = None
+        self._bank_key = ""
+        # 会话创建时记录的键：避免切换过程中被新题型覆盖导致存错位置
+        self._session_key = ("", "", "")
         self._question_cache = {}
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self._auto_advance)
         self._auto_qid = None
+        self._auto_action = None
         self._build_ui()
         self.number_panel = NumberPanel(self)
         self.number_panel.numberChosen.connect(self._on_number_chosen)
         self.number_panel.closeRequested.connect(self.close_number_panel)
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_app_state_changed)
         self._load_bank()
 
     # ---------------------------------------------------------------- UI
@@ -276,37 +354,57 @@ class MobileMainWindow(QWidget):
         hv.addWidget(self.stats_label)
         root.addWidget(header)
 
+        # 答题页 / 完成页
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("contentStack")
         self.quiz_view = MobileQuizView()
         self.quiz_view.answered.connect(self._on_answered)
         self.quiz_view.statsChanged.connect(self._refresh_chrome)
-        root.addWidget(self.quiz_view, 1)
+        self.finish_view = FinishView()
+        self.finish_view.restartRequested.connect(self._on_restart_requested)
+        self.finish_view.reviewRequested.connect(self._on_review_requested)
+        self.stack.addWidget(self.quiz_view)
+        self.stack.addWidget(self.finish_view)
+        root.addWidget(self.stack, 1)
 
-        bar = QWidget()
-        bar.setObjectName("bottomBar")
-        bh = QHBoxLayout(bar)
-        # 底部多留 32px：Android 手势条/导航栏会吞掉贴底的点击，
-        # 按钮若贴到窗口最底边，用户点按钮下半截会没反应。
-        bh.setContentsMargins(12, 8, 12, 44)
-        bh.setSpacing(10)
-        self.prev_button = QPushButton("上一题")
-        self.prev_button.setObjectName("navBtn")
+        self.bottom_bar = QWidget()
+        self.bottom_bar.setObjectName("bottomBar")
+        bv = QVBoxLayout(self.bottom_bar)
+        # 底部多留 44px：Android 手势条/导航栏会吞掉贴底的点击
+        bv.setContentsMargins(12, 8, 12, 44)
+        bv.setSpacing(8)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
         self.submit_button = QPushButton("提交答案")
         self.submit_button.setObjectName("submitBtn")
+        self.submit_button.clicked.connect(self.submit_multiple)
+        self.manual_button = QPushButton("提前交卷")
+        self.manual_button.setObjectName("manualBtn")
+        self.manual_button.clicked.connect(self.manual_submit)
+        action_row.addWidget(self.submit_button, 1)
+        action_row.addWidget(self.manual_button, 1)
+        bv.addLayout(action_row)
+
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(10)
+        self.prev_button = QPushButton("上一题")
+        self.prev_button.setObjectName("navBtn")
         self.next_button = QPushButton("下一题")
         self.next_button.setObjectName("navBtn")
         self.prev_button.clicked.connect(self.goto_prev)
-        self.submit_button.clicked.connect(self.submit_multiple)
         self.next_button.clicked.connect(self.goto_next)
-        bh.addWidget(self.prev_button, 1)
-        bh.addWidget(self.submit_button, 1)
-        bh.addWidget(self.next_button, 1)
-        root.addWidget(bar)
+        nav_row.addWidget(self.prev_button, 1)
+        nav_row.addWidget(self.next_button, 1)
+        bv.addLayout(nav_row)
+        root.addWidget(self.bottom_bar)
 
     # ------------------------------------------------------------ 加载题库
     def _load_bank(self):
         try:
             bank_path = database.get_default_db_path()
             database.open_bank(bank_path)
+            self._bank_key = os.path.basename(bank_path) or "quiz.db"
             sets = database.list_sets()
             self.set_name = sets[0] if sets else None
             self._question_cache = {}
@@ -321,13 +419,14 @@ class MobileMainWindow(QWidget):
         except Exception as exc:
             self.session = None
             self.index_label.setText("")
+            self.rate_label.setText("")
             self.stats_label.setText("题库加载失败")
             self.quiz_view.show_message(
                 "题库加载失败\n\n" + str(exc) + "\n\n" + traceback.format_exc())
             self.prev_button.setEnabled(False)
-            self.submit_button.setEnabled(False)
-            self.submit_button.setVisible(False)
             self.next_button.setEnabled(False)
+            self.submit_button.setVisible(False)
+            self.manual_button.setVisible(False)
 
     def _questions_for_type(self, qtype):
         """只读查询某题型的题目列表（带缓存，切换题型不重复读库）。"""
@@ -336,24 +435,127 @@ class MobileMainWindow(QWidget):
                 qtype=qtype, set_name=self.set_name)
         return self._question_cache[qtype]
 
+    # ------------------------------------------------------------ 会话与进度
     def select_type(self, qtype):
-        """切换题型：丢弃当前列表，加载该题型新列表并把索引重置到 0。"""
+        """切换题型：先保存当前进度，再加载该题型并恢复已保存的进度。"""
         if qtype not in TYPE_LABELS:
             return
         self._cancel_auto()
+        self._save_progress_now()
         self.current_type = qtype
+        self._start_normal_session(qtype)
+
+    def _start_normal_session(self, qtype):
         questions = self._questions_for_type(qtype)
+        self.close_number_panel()
         if not questions:
             self.session = None
-            self.close_number_panel()
-            self.quiz_view.show_message(
-                f"「{TYPE_LABELS[qtype]}」暂无题目")
+            self._ensure_quiz_view()
+            self.quiz_view.show_message(f"「{TYPE_LABELS[qtype]}」暂无题目")
             self._refresh_chrome()
             return
-        # 新会话 = 不保留上一个题型的作答；本步也不落盘
-        self.session = PracticeSession(MODE_NORMAL, questions)
+
+        self._session_key = (self._bank_key, qtype, self.set_name or "")
+        state = self._load_saved_state(questions)
+        session = PracticeSession(MODE_NORMAL, questions)
+        if state:
+            session.restore_state(state)
+        self.session = session
+
+        if session.view_mode == VIEW_FINISH and session.is_all_answered():
+            self.quiz_view.set_session(session)
+            self._show_completion()
+        else:
+            self._ensure_quiz_view()
+            self.quiz_view.set_session(session)
+            self._refresh_chrome()
+
+    def _load_saved_state(self, questions):
+        """读取并清洗已保存进度：题目若已不在题库中则跳过，绝不修改题库。"""
+        try:
+            state = progress_store.load_progress(*self._session_key)
+        except Exception:
+            return None
+        if not state:
+            return None
+        try:
+            ids = [int(i) for i in (state.get("question_ids") or [])]
+        except (TypeError, ValueError):
+            return None
+        existing = {int(q["id"]) for q in questions}
+        valid = [i for i in ids if i in existing]
+        if not valid:
+            return None
+        state["question_ids"] = valid
+        return state
+
+    def _save_progress_now(self):
+        """保存当前普通练习进度（只写 progress.db，不碰题库）。"""
+        if self.session is None or self.session.mode != MODE_NORMAL:
+            return
+        if not self.session.question_ids:
+            return
+        try:
+            progress_store.save_progress(
+                *self._session_key, self.session.serialize())
+        except Exception as exc:
+            traceback.print_exc()
+            self.stats_label.setText(f"进度保存失败：{exc}")
+
+    def _on_app_state_changed(self, state):
+        """退到后台时保存进度（Android 上按 Home / 切走应用）。"""
+        if state != Qt.ApplicationActive:
+            self._save_progress_now()
+
+    def closeEvent(self, event):
+        self._cancel_auto()
+        self._save_progress_now()
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------ 视图切换
+    def _ensure_quiz_view(self):
+        """强制回到答题页：跳题/上一题/下一题/切题型都不能残留完成页。"""
+        if self.session is not None:
+            self.session.view_mode = VIEW_QUIZ
+        if self.stack.currentWidget() is not self.quiz_view:
+            self.stack.setCurrentWidget(self.quiz_view)
+        if not self.bottom_bar.isVisible():
+            self.bottom_bar.setVisible(True)
+
+    def _show_completion(self):
+        """进入完成页：仅当前题型全部已答（自然答完或手动提交）才触发。"""
+        if not self.session:
+            return
+        if not self.session.is_all_answered():
+            self._ensure_quiz_view()
+            self.quiz_view.load_current()
+            self._refresh_chrome()
+            return
+        self._cancel_auto()
+        self.session.show_finish_view()
+        stats = self.session.get_finish_stats()
+        self.finish_view.set_stats(stats)
+        self.stack.setCurrentWidget(self.finish_view)
+        self.bottom_bar.setVisible(False)
+        self._save_progress_now()
+        self._refresh_chrome()
+
+    def _on_restart_requested(self):
+        """重新开始：清空本题型进度并回到第 1 题（不动题库）。"""
+        if not self.session:
+            return
+        self.session.restart_current_session()
+        try:
+            progress_store.delete_progress(*self._session_key)
+        except Exception:
+            traceback.print_exc()
+        self._ensure_quiz_view()
         self.quiz_view.set_session(self.session)
         self._refresh_chrome()
+
+    def _on_review_requested(self):
+        """返回第一题：保留答题痕迹，只切回答题页。"""
+        self._jump_to(0)
 
     # ------------------------------------------------------------ 刷新界面
     def _refresh_chrome(self):
@@ -369,7 +571,7 @@ class MobileMainWindow(QWidget):
         total = self.session.count()
         index = self.session.current_index
         all_answered = self.session.is_all_answered()
-        if all_answered:
+        if all_answered or self.session.view_mode == VIEW_FINISH:
             self.index_label.setText(f"练习完成 · 共 {total} 题")
         else:
             self.index_label.setText(f"第 {index + 1} 题 / 共 {total} 题")
@@ -391,8 +593,7 @@ class MobileMainWindow(QWidget):
             style.polish(btn)
 
     def _force_repaint(self):
-        """标题栏与统计文字同样会被 Android 的局部重绘牵连（数字缺笔画），
-        这里整窗重绘一次，并再排一次 0ms 重绘兜住布局刚结算完的那一帧。"""
+        """Android 上局部重绘会让数字缺笔画，这里整窗重绘一次。"""
         self.update()
         self.repaint()
         QTimer.singleShot(0, self._repaint_window)
@@ -411,59 +612,117 @@ class MobileMainWindow(QWidget):
         self.submit_button.setVisible(is_multiple and not all_answered)
         self.submit_button.setEnabled(
             is_multiple and not answered and bool(self.quiz_view.selected_keys()))
+        allowed = self._manual_submit_allowed()
+        self.manual_button.setVisible(allowed)
+        self.manual_button.setEnabled(allowed)
         self.prev_button.setEnabled(has_session and not all_answered and index > 0)
-        self.next_button.setEnabled(
-            has_session and not all_answered and index < total - 1)
+        self.next_button.setEnabled(has_session and not all_answered)
+
+    # ------------------------------------------------------------ 手动提交
+    def _manual_submit_allowed(self):
+        if not self.session:
+            return False
+        if self.session.mode != MODE_NORMAL:
+            return False
+        if self.session.manual_submitted:
+            return False
+        if self.session.is_all_answered():
+            return False
+        return self.session.count() > 0
+
+    def manual_submit(self):
+        """提前交卷：未答题按错误计入成绩，但绝不写错题本。"""
+        if not self._manual_submit_allowed():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("提前交卷")
+        box.setIcon(QMessageBox.Question)
+        box.setText(MANUAL_SUBMIT_TIP)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.button(QMessageBox.Yes).setText("提交")
+        box.button(QMessageBox.No).setText("取消")
+        if box.exec() != QMessageBox.Yes:
+            return
+        # 只标记强制判错，不调用任何错题本接口
+        self.session.mark_unanswered()
+        self._save_progress_now()
+        self._refresh_chrome()
+        self._show_completion()
 
     # ------------------------------------------------------------ 判定回调
     def _on_answered(self, correct):
         self._cancel_auto()
+        self._save_progress_now()
         self._refresh_chrome()
-        if not correct or not self.session:
+        if not self.session:
             return
-        question = self.session.current_question()
-        self._auto_qid = question["id"] if question else None
+        if self.session.is_all_answered():
+            self._auto_action = "finish"
+        elif correct:
+            question = self.session.current_question()
+            self._auto_qid = question["id"] if question else None
+            self._auto_action = "next"
+        else:
+            return
         self._auto_timer.start(DELAY_CORRECT_MS)
 
     def _cancel_auto(self):
         self._auto_timer.stop()
         self._auto_qid = None
+        self._auto_action = None
 
     def _auto_advance(self):
+        action = self._auto_action
+        expected_qid = self._auto_qid
+        self._auto_action = None
+        self._auto_qid = None
         if not self.session:
             return
-        question = self.session.current_question()
-        if question is None:
+        if expected_qid is not None:
+            question = self.session.current_question()
+            if question is None or question["id"] != expected_qid:
+                return
+        if action == "finish":
+            self._show_completion()
             return
-        if self._auto_qid is not None and question["id"] != self._auto_qid:
-            return
-        self._auto_qid = None
         self.goto_next()
 
     # ------------------------------------------------------------ 导航
+    def _jump_to(self, index):
+        if not self.session:
+            return
+        self._cancel_auto()
+        self._ensure_quiz_view()
+        if self.session.navigate_to_question(index):
+            self.quiz_view.load_current()
+            self._refresh_chrome()
+            self._save_progress_now()
+
     def goto_next(self):
         if not self.session:
             return
         self._cancel_auto()
+        self._ensure_quiz_view()
         if self.session.is_all_answered():
-            self._refresh_chrome()
+            self._show_completion()
             return
-        if self.session.navigate_to_question(self.session.current_index + 1):
+        if self.session.advance_after_answer():
             self.quiz_view.load_current()
             self._refresh_chrome()
+            self._save_progress_now()
+        else:
+            self._show_completion()
 
     def goto_prev(self):
         if not self.session:
             return
         self._cancel_auto()
-        if self.session.is_all_answered():
-            self._refresh_chrome()
-            return
+        self._ensure_quiz_view()
         if self.session.current_index <= 0:
-            return
-        if self.session.navigate_to_question(self.session.current_index - 1):
-            self.quiz_view.load_current()
             self._refresh_chrome()
+            return
+        self._jump_to(self.session.current_index - 1)
 
     def submit_multiple(self):
         if not self.session:
@@ -486,11 +745,7 @@ class MobileMainWindow(QWidget):
 
     def _on_number_chosen(self, index):
         self.close_number_panel()
-        if not self.session:
-            return
-        if self.session.navigate_to_question(index):
-            self.quiz_view.load_current()
-            self._refresh_chrome()
+        self._jump_to(index)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
