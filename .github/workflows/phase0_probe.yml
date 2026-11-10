@@ -181,12 +181,7 @@ jobs:
           echo "APK_SIZE_MB=$SIZE_MB"
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
           echo "===== 题库资产打包检查 ====="
-          if ! tar -xOf "$APK" assets/private.tar | tar -tf - | grep -qi 'quiz\.db'; then
-            echo "错误：APK 的 assets/private.tar 内未找到 quiz.db（assets 未被打包）"
-            tar -tf "$APK" | head -40
-            exit 1
-          fi
-          tar -xOf "$APK" assets/private.tar | tar -tf - | grep -Ei 'quiz\.db' || true
+          python3 -c "import io,sys,tarfile,zipfile;z=zipfile.ZipFile(sys.argv[1]);d=z.read('assets/private.tar');t=tarfile.open(fileobj=io.BytesIO(d));ns=t.getnames();hit=[n for n in ns if n.endswith('assets/quiz.db')];print('private.tar 内 quiz.db:',hit);sys.exit(0 if hit else 1)" "$APK" || { echo "错误：assets/private.tar 内未找到 quiz.db"; unzip -l "$APK" | head -40; exit 1; }
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5 || true
 
       - name: 失败诊断（OOM / 磁盘 / 关键日志）
