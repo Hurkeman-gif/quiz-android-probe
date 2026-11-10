@@ -61,15 +61,28 @@ class NumberGrid(QWidget):
         font.setBold(True)
         self._font = font
 
+    # ---------------------------------------------------------------- 刷新
+    def _refresh(self):
+        """立即整块重绘。
+
+        Android 上 Qt 会把多次 update() 合并成局部脏区，而我们有内部滚动偏移，
+        没被标脏的那部分会保留上一帧像素（表现为某一列数字叠影）。
+        这里改用 repaint() 同步整块重绘，同时让窗口重新合成一次。
+        """
+        self.repaint()
+        window = self.window()
+        if window is not None and window is not self:
+            window.update()
+
     # ---------------------------------------------------------------- 数据
     def set_states(self, states):
         self._states = list(states)
         self._offset = 0.0
-        self.update()
+        self._refresh()
 
     def refresh_states(self, states):
         self._states = list(states)
-        self.update()
+        self._refresh()
 
     def ensure_visible(self, index: int):
         if not self._states:
@@ -82,7 +95,7 @@ class NumberGrid(QWidget):
         elif bottom > self._offset + self.height():
             self._offset = float(bottom - self.height())
         self._clamp()
-        self.update()
+        self._refresh()
 
     # ---------------------------------------------------------------- 几何
     def _cell_width(self) -> float:
@@ -189,7 +202,7 @@ class NumberGrid(QWidget):
         if self._dragging:
             self._offset = self._press_offset - dy
             self._clamp()
-            self.update()
+            self._refresh()
         event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -204,7 +217,7 @@ class NumberGrid(QWidget):
     def wheelEvent(self, event):
         self._offset -= event.angleDelta().y() / 2.0
         self._clamp()
-        self.update()
+        self._refresh()
         event.accept()
 
     def resizeEvent(self, event):
