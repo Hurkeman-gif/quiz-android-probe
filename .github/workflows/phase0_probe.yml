@@ -125,6 +125,20 @@ jobs:
           "$RUNNER_TEMP/deploy-venv/bin/python" -c "import PySide6, shiboken6; print(PySide6.__version__)"
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy" --help
 
+      - name: 固定 p4a 版本（Python 3.11，匹配 cp311 轮子）
+        run: |
+          set -euo pipefail
+          # 官方 PySide6 6.8.3 的 android 轮子是 cp311（Python 3.11）；
+          # 但 p4a develop 已经升到 Python 3.14，装出来的 APK 里只有 libpython3.14.so，
+          # 而 libshiboken6.abi3.so 要的是 libpython3.11.so → 启动即 UnsatisfiedLinkError 闪退。
+          # 这里往生成的 buildozer.spec 里补一个 p4a.commit，把 p4a 钉死在 Python 3.11.5 的提交上。
+          P4A_COMMIT="331e4e4336e50550f0bf6a055c3b1d77cf801bb8"
+          SPEC_PY=$(ls "$RUNNER_TEMP"/deploy-venv/lib/python*/site-packages/PySide6/scripts/deploy_lib/android/buildozer.py | head -n 1)
+          echo "SPEC_PY=$SPEC_PY"
+          grep -n 'p4a.branch", "develop"' "$SPEC_PY"
+          sed -i "s|self.set_value(\"app\", \"p4a.branch\", \"develop\")|self.set_value(\"app\", \"p4a.branch\", \"develop\")\n        self.set_value(\"app\", \"p4a.commit\", \"$P4A_COMMIT\")|" "$SPEC_PY"
+          grep -n 'p4a.commit' "$SPEC_PY"
+
       - name: 打包 debug APK（pyside6-android-deploy）
         working-directory: phase0_probe
         run: |
