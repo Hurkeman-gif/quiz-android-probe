@@ -1,0 +1,231 @@
+name: Phase0 Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      qt_version:
+        description: "Qt / PySide6 版本（必须有官方 android_aarch64 wheel）"
+        required: true
+        default: "6.8.3"
+      ndk_version:
+        description: "Android NDK 版本"
+        required: true
+        default: "26.1.10909125"
+      run_cross_compile:
+        description: "是否额外执行交叉编译 wheel 的 job（约 2-4 小时）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: phase0-probe
+  cancel-in-progress: false
+
+env:
+  QT_VERSION: ${{ inputs.qt_version }}
+  NDK_VERSION: ${{ inputs.ndk_version }}
+  ANDROID_API: "35"
+  HOST_PYTHON: "3.11"
+  QT_ROOT: ${{ github.workspace }}/.qt
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.daemon=false"
+
+jobs:
+  deploy-apk:
+    name: A / 官方 wheel -> APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout 仓库
+        uses: actions/checkout@v4
+
+      - name: 基线信息（磁盘 / 内存 / 核数 / 预装 NDK / Java）
+        run: |
+          date
+          df -h /
+          free -h
+          nproc
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/ndk" || true
+          java -version || true
+
+      - name: 释放磁盘空间（目标 +20 GB）
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android/sdk/system-images || true
+          sudo rm -rf "$ANDROID_HOME/ndk/"* || true
+          df -h /
+
+      - name: 安装 Python ${{ env.HOST_PYTHON }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.HOST_PYTHON }}
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 接受许可并安装 SDK / NDK 组件
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-$ANDROID_API" "build-tools;35.0.0" "ndk;$NDK_VERSION"
+          ls "$ANDROID_HOME/ndk"
+
+      - name: 用 aqt 安装 Qt for Android
+        run: |
+          python -m pip install --upgrade pip aqtinstall
+          aqt install-qt linux android "$QT_VERSION" android_arm64_v8a -O "$QT_ROOT"
+          ls "$QT_ROOT/$QT_VERSION"
+          du -sh "$QT_ROOT"
+
+      - name: 下载官方 Android 轮子并记录 sha256
+        run: |
+          set -euo pipefail
+          mkdir -p wheels
+          BASE=https://download.qt.io/official_releases/QtForPython
+          PS="PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"
+          SB="shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"
+          curl -fL --retry 3 -o "wheels/$PS" "$BASE/pyside6/$PS"
+          curl -fL --retry 3 -o "wheels/$SB" "$BASE/shiboken6/$SB"
+          sha256sum wheels/*.whl | tee wheels/SHA256SUMS
+          ls -lh wheels
+
+      - name: 准备部署用虚拟环境
+        run: |
+          python -m venv "$RUNNER_TEMP/deploy-venv"
+          "$RUNNER_TEMP/deploy-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/deploy-venv/bin/pip" install "PySide6==$QT_VERSION"
+          "$RUNNER_TEMP/deploy-venv/bin/python" -c "import PySide6, shiboken6; print(PySide6.__version__)"
+          "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy" --help
+
+      - name: 打包 debug APK（pyside6-android-deploy）
+        working-directory: phase0_probe
+        run: |
+          set -x
+          "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name Phase0Probe             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名）
+        run: |
+          set -euo pipefail
+          APK=$(find "$GITHUB_WORKSPACE" -name '*.apk' -type f | head -n 1)
+          echo "APK=$APK"
+          test -n "$APK"
+          ls -l "$APK"
+          SIZE_MB=$(du -m "$APK" | cut -f1)
+          echo "APK_SIZE_MB=$SIZE_MB"
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5 || true
+
+      - name: 失败诊断（OOM / 磁盘 / 关键日志）
+        if: failure()
+        run: |
+          echo '===== dmesg OOM ====='; sudo dmesg | grep -iE 'out of memory|killed process' | tail -20 || true
+          echo '===== df ====='; df -h /
+          echo '===== deploy.log 尾部 ====='; tail -80 "$RUNNER_TEMP/deploy.log" || true
+          echo '===== 关键错误行 ====='; grep -nE 'Error|error:|ERROR|Failed|failed|Killed|No space|Out of memory' "$RUNNER_TEMP/deploy.log" | tail -40 || true
+
+      - name: 上传 artifact：APK / 轮子 / 日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-apk
+          path: |
+            **/*.apk
+            phase0_probe/pysidedeploy.spec
+            wheels/*.whl
+            wheels/SHA256SUMS
+            ${{ runner.temp }}/deploy.log
+          if-no-files-found: warn
+
+  cross-compile:
+    name: B / 交叉编译 aarch64 wheel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 330
+    continue-on-error: true
+    if: ${{ inputs.run_cross_compile }}
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+    steps:
+      - name: Checkout 仓库
+        uses: actions/checkout@v4
+
+      - name: 基线信息
+        run: |
+          df -h /; free -h; nproc; java -version || true
+
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android/sdk/system-images || true
+          df -h /
+
+      - name: 安装 Python ${{ env.HOST_PYTHON }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.HOST_PYTHON }}
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 缓存 NDK/SDK/交叉编译的 CPython
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pyside6_deploy_cache
+            ~/Qt
+          key: pyside-android-${{ runner.os }}-qt${{ env.QT_VERSION }}-ndk${{ env.NDK_VERSION }}-py${{ env.HOST_PYTHON }}-v1
+
+      - name: 克隆 pyside-setup
+        run: |
+          git clone --depth 1 --branch "v$QT_VERSION" https://code.qt.io/pyside/pyside-setup ||           git clone --depth 1 --branch "v$QT_VERSION" https://github.com/pyside/pyside-setup pyside-setup
+          cd pyside-setup && git log -1 --oneline
+
+      - name: 安装交叉编译依赖
+        run: |
+          cd pyside-setup
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r tools/cross_compile_android/requirements.txt
+
+      - name: 安装 Qt for Android（交叉编译输入）
+        run: |
+          python -m pip install aqtinstall
+          aqt install-qt linux android "$QT_VERSION" android_arm64_v8a -O "$QT_ROOT"
+          du -sh "$QT_ROOT"
+
+      - name: 下载 NDK / SDK 到工具缓存目录
+        run: |
+          cd pyside-setup
+          python tools/cross_compile_android/main.py --download-only --skip-update --auto-accept-license
+          ls -1 ~/.pyside6_android_deploy 2>/dev/null || ls -1 ~/.pyside6_deploy_cache || true
+
+      - name: 交叉编译 wheel（aarch64）
+        run: |
+          cd pyside-setup
+          python tools/cross_compile_android/main.py             --plat-name aarch64             --qt-install-path "$QT_ROOT/$QT_VERSION"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --auto-accept-license --skip-update 2>&1 | tee "$RUNNER_TEMP/cross.log"
+
+      - name: 收集轮子
+        if: always()
+        run: |
+          find pyside-setup -name '*android_aarch64.whl' -type f -print -exec ls -lh {} ; | tee "$RUNNER_TEMP/wheels.txt" || true
+
+      - name: 失败诊断
+        if: failure()
+        run: |
+          echo '===== dmesg OOM ====='; sudo dmesg | grep -iE 'out of memory|killed process' | tail -20 || true
+          echo '===== 磁盘 ====='; df -h /
+          echo '===== cross.log 尾部 ====='; tail -100 "$RUNNER_TEMP/cross.log" || true
+          echo '===== 错误行 ====='; grep -nE 'error:|Killed|MemoryError|No space|CMake Error' "$RUNNER_TEMP/cross.log" | tail -40 || true
+
+      - name: 上传 artifact：交叉编译轮子 / 日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-wheels-cross
+          path: |
+            ${{ runner.temp }}/cross.log
+            ${{ runner.temp }}/wheels.txt
+          if-no-files-found: warn

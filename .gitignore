@@ -1,0 +1,11 @@
+# 白名单式 .gitignore：先忽略一切，再逐个放行（防止误推题库/备份/venv）
+*
+!.gitignore
+!phase0_probe/
+!phase0_probe/**
+!.github/
+!.github/**
+
+# 本地生成物再次忽略（避免被上面的白名单放行）
+__pycache__/
+*.pyc
