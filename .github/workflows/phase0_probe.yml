@@ -95,7 +95,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/deploy-venv"
           "$RUNNER_TEMP/deploy-venv/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/deploy-venv/bin/pip" install "PySide6==$QT_VERSION"
+          "$RUNNER_TEMP/deploy-venv/bin/pip" install "PySide6==$QT_VERSION" packaging setuptools wheel
           "$RUNNER_TEMP/deploy-venv/bin/python" -c "import PySide6, shiboken6; print(PySide6.__version__)"
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy" --help
 
