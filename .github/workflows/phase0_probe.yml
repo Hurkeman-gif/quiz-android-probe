@@ -94,6 +94,8 @@ jobs:
       - name: 准备部署用虚拟环境
         run: |
           python -m venv "$RUNNER_TEMP/deploy-venv"
+          # 修复 buildozer 在 venv 中 --user 安装失败的问题
+          sed -i 's/include-system-site-packages = false/include-system-site-packages = true/' "$RUNNER_TEMP/deploy-venv/pyvenv.cfg" || true
           "$RUNNER_TEMP/deploy-venv/bin/python" -m pip install --upgrade pip
           "$RUNNER_TEMP/deploy-venv/bin/pip" install "PySide6==$QT_VERSION" packaging setuptools wheel
           "$RUNNER_TEMP/deploy-venv/bin/python" -c "import PySide6, shiboken6; print(PySide6.__version__)"
