@@ -10,7 +10,7 @@ on:
       ndk_version:
         description: "Android NDK 版本"
         required: true
-        default: "26.1.10909125"
+        default: "28.2.13676358"
       run_cross_compile:
         description: "是否额外执行交叉编译 wheel 的 job（约 2-4 小时）"
         type: boolean
