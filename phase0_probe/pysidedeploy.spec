@@ -7,6 +7,9 @@ exec_directory = .
 [qt]
 modules = Core,Gui,Widgets
 
+[python]
+android_packages = buildozer==1.5.0,cython==0.29.33
+
 [android]
 arch = aarch64
 
