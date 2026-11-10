@@ -25,8 +25,10 @@ from .quiz_view import MobileQuizView
 DELAY_CORRECT_MS = 800
 
 MOBILE_QSS = """
-QWidget {
+QWidget#mobileRoot {
     background: #F5F7FA;
+}
+QLabel {
     color: #1F2937;
 }
 #headerBar {
@@ -104,58 +106,72 @@ QPushButton#submitBtn:disabled {
     background: #BFDBFE;
     color: #EFF6FF;
 }
-QPushButton[opt="normal"] {
-    min-height: 56px;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 14pt;
-    color: #1F2937;
+/* 选项卡片：内边距由 OptionCard 的布局 margins 控制，这里只管底色与边框 */
+QPushButton#optionCard {
+    border-radius: 14px;
     background: #FFFFFF;
     border: 1px solid #D5DCE6;
-}
-QPushButton[opt="picked"] {
-    min-height: 56px;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: left;
     font-size: 14pt;
-    font-weight: 600;
-    color: #1D4ED8;
+}
+QPushButton#optionCard[opt="picked"] {
     background: #E8F1FF;
     border: 2px solid #2563EB;
 }
-QPushButton[opt="correct"] {
-    min-height: 56px;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 14pt;
-    font-weight: 700;
-    color: #FFFFFF;
+QPushButton#optionCard[opt="correct"] {
     background: #16A34A;
     border: 1px solid #16A34A;
 }
-QPushButton[opt="wrong"] {
-    min-height: 56px;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 14pt;
-    font-weight: 700;
-    color: #FFFFFF;
+QPushButton#optionCard[opt="wrong"] {
     background: #DC2626;
     border: 1px solid #DC2626;
 }
-QPushButton[opt="dim"] {
-    min-height: 56px;
-    border-radius: 12px;
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 14pt;
-    color: #9CA3AF;
+QPushButton#optionCard[opt="dim"] {
     background: #F3F4F6;
     border: 1px solid #E5E7EB;
+}
+QLabel#optionKey {
+    background: transparent;
+    color: #374151;
+    font-size: 15pt;
+    font-weight: 700;
+}
+QLabel#optionText {
+    background: transparent;
+    color: #1F2937;
+    font-size: 14pt;
+}
+QPushButton#optionCard[opt="picked"] QLabel#optionKey,
+QPushButton#optionCard[opt="picked"] QLabel#optionText {
+    color: #1D4ED8;
+}
+QPushButton#optionCard[opt="correct"] QLabel#optionKey,
+QPushButton#optionCard[opt="correct"] QLabel#optionText {
+    color: #FFFFFF;
+}
+QPushButton#optionCard[opt="wrong"] QLabel#optionKey,
+QPushButton#optionCard[opt="wrong"] QLabel#optionText {
+    color: #FFFFFF;
+}
+QPushButton#optionCard[opt="dim"] QLabel#optionKey,
+QPushButton#optionCard[opt="dim"] QLabel#optionText {
+    color: #9CA3AF;
+}
+QLabel#resultLabel {
+    background: transparent;
+    font-size: 16pt;
+    font-weight: 700;
+}
+QLabel#resultLabel[state="correct"] {
+    color: #15803D;
+}
+QLabel#resultLabel[state="wrong"] {
+    color: #DC2626;
+}
+QLabel#explainTitle {
+    background: transparent;
+    color: #B45309;
+    font-size: 11pt;
+    font-weight: 700;
 }
 """
 
@@ -165,6 +181,7 @@ class MobileMainWindow(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("mobileRoot")
         self.setWindowTitle("答题练习软件")
         self.setStyleSheet(MOBILE_QSS)
         self.session = None

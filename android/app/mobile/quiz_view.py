@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 """移动端答题视图：题干、选项、判定颜色、解析。
 
+渲染策略（针对 Android 触屏重做）：
+- 选项是「卡片按钮」：QPushButton + 子 QLabel，文字换行交给 QLabel 的 wordWrap，
+  不再在 resizeEvent 里改按钮文字（旧做法会让 sizeHint 反复变化、布局与绘制错位）；
+- 卡片左右内边距由布局 margins 决定，不靠 QSS padding，避免边框/内边距挤压文字；
+- 判定颜色用动态属性 opt + QSS；子标签颜色也由 QSS 决定，不在运行时改内联样式；
+- 结果提示与解析放在独立的 feedback 容器里，作为一个整体 addWidget 进主布局。
+
 只负责渲染与交互：判定结果与统计全部交给 app.session.PracticeSession，
 本视图不保存进度、不写错题本、不写历史记录。
 """
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -19,50 +27,50 @@ CORRECT_TEXT = "回答正确"
 WRONG_TEXT = "回答错误"
 
 
-class MobileOptionButton(QPushButton):
-    """触屏选项按钮：显示 “A. 文本”，长文本按当前宽度自动换行。"""
+class OptionCard(QPushButton):
+    """触屏选项卡片：左侧字母 key，右侧题面文字，自动换行、自动撑高。"""
 
     def __init__(self, key: str, text: str, parent=None):
         super().__init__(parent)
-        self.opt_key = key
-        self._raw_text = f"{key}. {text}"
+        self.opt_key = str(key)
+        self.setText("")
+        self.setObjectName("optionCard")
         self.setProperty("opt", "normal")
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(56)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.setText(self._raw_text)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setMinimumHeight(64)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._rewrap()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 12, 16, 12)
+        row.setSpacing(10)
 
-    def _rewrap(self):
-        width = max(self.width() - 56, 120)
-        fm = self.fontMetrics()
-        lines = []
-        for para in self._raw_text.split("\n"):
-            if not para:
-                lines.append("")
-                continue
-            current = ""
-            for ch in para:
-                if fm.horizontalAdvance(current + ch) <= width:
-                    current += ch
-                else:
-                    lines.append(current)
-                    current = ch
-            lines.append(current)
-        wrapped = "\n".join(lines)
-        if wrapped != self.text():
-            self.setText(wrapped)
+        self.key_label = QLabel(self.opt_key, self)
+        self.key_label.setObjectName("optionKey")
+        self.key_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.key_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.key_label.setMinimumWidth(20)
+
+        self.text_label = QLabel(str(text or ""), self)
+        self.text_label.setObjectName("optionText")
+        self.text_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.text_label.setWordWrap(True)
+        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.text_label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Minimum)
+
+        row.addWidget(self.key_label, 0, Qt.AlignTop)
+        row.addWidget(self.text_label, 1)
 
     def set_state(self, state: str):
         if self.property("opt") == state:
             return
         self.setProperty("opt", state)
-        style = self.style()
-        style.unpolish(self)
-        style.polish(self)
+        for widget in (self, self.key_label, self.text_label):
+            style = widget.style()
+            style.unpolish(widget)
+            style.polish(widget)
+        self.update()
 
 
 class MobileQuizView(QWidget):
@@ -73,6 +81,7 @@ class MobileQuizView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("quizView")
         self.session = None
         self.answered_now = False
         self._buttons = []
@@ -88,47 +97,78 @@ class MobileQuizView(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setObjectName("quizScroll")
         self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         body = QWidget()
         body.setObjectName("quizBody")
+        self._body = body
+        body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        # 主内容列：所有子控件都通过 addWidget 进入这同一个垂直布局
         box = QVBoxLayout(body)
-        box.setContentsMargins(14, 10, 14, 14)
-        box.setSpacing(10)
+        box.setContentsMargins(18, 16, 18, 20)
+        box.setSpacing(12)
 
         self.stem_label = QLabel("")
         self.stem_label.setObjectName("stemLabel")
         self.stem_label.setWordWrap(True)
         self.stem_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.stem_label.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                      QSizePolicy.Policy.Minimum)
         box.addWidget(self.stem_label)
 
         self.options_layout = QVBoxLayout()
-        self.options_layout.setSpacing(9)
+        self.options_layout.setContentsMargins(0, 0, 0, 0)
+        self.options_layout.setSpacing(10)
         box.addLayout(self.options_layout)
+
+        # 反馈区整体作为一个容器，避免提示标签脱离主布局
+        self.feedback_box = QWidget()
+        self.feedback_box.setObjectName("feedbackBox")
+        fb = QVBoxLayout(self.feedback_box)
+        fb.setContentsMargins(0, 4, 0, 0)
+        fb.setSpacing(8)
 
         self.result_label = QLabel("")
         self.result_label.setObjectName("resultLabel")
+        self.result_label.setProperty("state", "correct")
         self.result_label.setWordWrap(True)
-        box.addWidget(self.result_label)
+        self.result_label.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                        QSizePolicy.Policy.Minimum)
+        fb.addWidget(self.result_label)
 
         self.answer_label = QLabel("")
         self.answer_label.setObjectName("answerLabel")
         self.answer_label.setWordWrap(True)
-        box.addWidget(self.answer_label)
+        self.answer_label.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                        QSizePolicy.Policy.Minimum)
+        fb.addWidget(self.answer_label)
 
         self.explanation_frame = QFrame()
         self.explanation_frame.setObjectName("explainFrame")
+        self.explanation_frame.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                             QSizePolicy.Policy.Minimum)
         exp_box = QVBoxLayout(self.explanation_frame)
-        exp_box.setContentsMargins(12, 10, 12, 10)
+        exp_box.setContentsMargins(14, 10, 14, 10)
+        exp_box.setSpacing(4)
+        self.explain_title = QLabel("解析")
+        self.explain_title.setObjectName("explainTitle")
+        exp_box.addWidget(self.explain_title)
         self.explanation_label = QLabel("")
         self.explanation_label.setObjectName("explainLabel")
         self.explanation_label.setWordWrap(True)
         self.explanation_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.explanation_label.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                             QSizePolicy.Policy.Minimum)
         exp_box.addWidget(self.explanation_label)
-        box.addWidget(self.explanation_frame)
+        fb.addWidget(self.explanation_frame)
 
+        box.addWidget(self.feedback_box)
         box.addStretch(1)
+
+        self._box = box
         self.scroll.setWidget(body)
+        self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.scroll)
         self._hide_feedback()
 
@@ -146,6 +186,75 @@ class MobileQuizView(QWidget):
         self.stem_label.setText(text)
         self.answered_now = True
         self._hide_feedback()
+        self.refresh_layout()
+
+    def eventFilter(self, obj, event):
+        if obj is self.scroll.viewport() and event.type() == QEvent.Resize:
+            self._sync_heights()
+        return super().eventFilter(obj, event)
+
+    def refresh_layout(self):
+        """按当前视口宽度重算逐行文字高度，再强制重绘。
+
+        QLabel 的自动换行只有在拿到确定的宽度后才能算出行高；光靠布局的
+        sizeHint 会让长题干/长选项被截断，所以这里显式调用 heightForWidth。
+        """
+        self._sync_heights()
+        body = self.scroll.widget()
+        if body is not None:
+            body.update()
+        self.scroll.viewport().update()
+        self.update()
+
+    def _sync_heights(self):
+        body = self.scroll.widget()
+        if body is None:
+            return
+        width = self.scroll.viewport().width()
+        if width <= 0:
+            return
+        margins = self._box.contentsMargins()
+        inner = max(160, width - margins.left() - margins.right())
+
+        # 先让 QSS 的字体生效，否则新加进来的控件还是默认小字号，
+        # 算出来的行高会明显偏小（长选项被截断）。
+        for widget in (self.stem_label, self.answer_label, self.explanation_label):
+            widget.ensurePolished()
+        for card in self._buttons:
+            card.ensurePolished()
+            card.key_label.ensurePolished()
+            card.text_label.ensurePolished()
+
+        stem_h = self.stem_label.heightForWidth(inner)
+        if stem_h <= 0:
+            stem_h = self.stem_label.sizeHint().height()
+        self.stem_label.setFixedHeight(stem_h)
+
+        for card in self._buttons:
+            card_layout = card.layout()
+            cm = card_layout.contentsMargins()
+            key_w = max(20, card.key_label.sizeHint().width())
+            text_w = max(60, inner - cm.left() - cm.right() - key_w
+                         - card_layout.spacing())
+            text_h = card.text_label.heightForWidth(text_w)
+            if text_h <= 0:
+                text_h = card.text_label.sizeHint().height()
+            card.setFixedHeight(max(64, text_h + cm.top() + cm.bottom()))
+
+        exp_w = max(80, inner - 28)
+        exp_h = self.explanation_label.heightForWidth(exp_w)
+        if exp_h <= 0:
+            exp_h = self.explanation_label.sizeHint().height()
+        self.explanation_label.setFixedHeight(exp_h)
+
+        ans_h = self.answer_label.heightForWidth(inner)
+        if ans_h <= 0:
+            ans_h = self.answer_label.sizeHint().height()
+        self.answer_label.setFixedHeight(ans_h)
+
+        self._box.activate()
+        body.setMinimumHeight(self._box.sizeHint().height())
+        body.update()
 
     # ------------------------------------------------------------ 渲染
     def load_current(self):
@@ -164,10 +273,10 @@ class MobileQuizView(QWidget):
         self.stem_label.setText(question.get("stem") or "")
         for opt in question.get("options") or []:
             key = str(opt.get("key") or "")
-            btn = MobileOptionButton(key, str(opt.get("text") or ""))
-            btn.clicked.connect(lambda _checked=False, k=key: self.pick(k))
-            self.options_layout.addWidget(btn)
-            self._buttons.append(btn)
+            card = OptionCard(key, str(opt.get("text") or ""))
+            card.clicked.connect(lambda _checked=False, k=key: self.pick(k))
+            self.options_layout.addWidget(card)
+            self._buttons.append(card)
 
         progress = self.session.progress_for(question["id"])
         if progress:
@@ -178,12 +287,16 @@ class MobileQuizView(QWidget):
         else:
             self._hide_feedback()
         self.scroll.verticalScrollBar().setValue(0)
+        self.refresh_layout()
         self.statsChanged.emit()
 
     def _clear_options(self):
-        for btn in self._buttons:
-            self.options_layout.removeWidget(btn)
-            btn.deleteLater()
+        while self.options_layout.count():
+            item = self.options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
         self._buttons = []
 
     # ------------------------------------------------------------ 交互
@@ -198,8 +311,8 @@ class MobileQuizView(QWidget):
                 self._selected.remove(key)
             else:
                 self._selected.append(key)
-            for btn in self._buttons:
-                btn.set_state("picked" if btn.opt_key in self._selected else "normal")
+            for card in self._buttons:
+                card.set_state("picked" if card.opt_key in self._selected else "normal")
             self.statsChanged.emit()
         else:
             self.submit([key])
@@ -230,31 +343,29 @@ class MobileQuizView(QWidget):
     # ------------------------------------------------------------ 判定颜色
     def _apply_states(self, correct: bool, selection, question):
         answer = [str(k) for k in (question.get("answer") or [])]
-        for btn in self._buttons:
-            btn.setEnabled(False)
-            if btn.opt_key in answer:
-                btn.set_state("correct")
-            elif btn.opt_key in selection:
-                btn.set_state("wrong")
+        for card in self._buttons:
+            card.setEnabled(False)
+            if card.opt_key in answer:
+                card.set_state("correct")
+            elif card.opt_key in selection:
+                card.set_state("wrong")
             else:
-                btn.set_state("dim")
+                card.set_state("dim")
 
     def _show_feedback(self, correct: bool, question):
         self.result_label.setText(CORRECT_TEXT if correct else WRONG_TEXT)
-        color = "#15803D" if correct else "#B91C1C"
-        self.result_label.setStyleSheet(
-            f"color: {color}; font-size: 16pt; font-weight: 700;")
-        self.result_label.show()
+        self.result_label.setProperty("state", "correct" if correct else "wrong")
+        style = self.result_label.style()
+        style.unpolish(self.result_label)
+        style.polish(self.result_label)
 
         answer = [str(k) for k in (question.get("answer") or [])]
         self.answer_label.setText("正确答案：" + "、".join(answer))
-        self.answer_label.show()
 
         text = (question.get("explanation") or "").strip()
         self.explanation_label.setText(text if text else "暂无解析")
-        self.explanation_frame.show()
+        self.feedback_box.show()
+        self.feedback_box.adjustSize()
 
     def _hide_feedback(self):
-        self.result_label.hide()
-        self.answer_label.hide()
-        self.explanation_frame.hide()
+        self.feedback_box.hide()
