@@ -139,8 +139,29 @@ jobs:
           sed -i "s|self.set_value(\"app\", \"p4a.branch\", \"develop\")|self.set_value(\"app\", \"p4a.branch\", \"develop\")\n        self.set_value(\"app\", \"p4a.commit\", \"$P4A_COMMIT\")|" "$SPEC_PY"
           grep -n 'p4a.commit' "$SPEC_PY"
 
+      - name: 把题库资产加入打包（source.include_exts 加 db）
+        run: |
+          set -euo pipefail
+          # 让 buildozer 把 android/assets/quiz.db 一起打包进 APK 的 private 归档。
+          # 默认 include_exts 不含 db，这里补上，运行时从私有目录解压读取。
+          SPEC_PY=$(ls "$RUNNER_TEMP"/deploy-venv/lib/python*/site-packages/PySide6/scripts/deploy_lib/android/buildozer.py | head -n 1)
+          echo "SPEC_PY=$SPEC_PY"
+          sed -i 's|include_exts = f"{include_exts},qml,js"|include_exts = f"{include_exts},qml,js,db"|' "$SPEC_PY"
+          grep -n 'qml,js' "$SPEC_PY"
+
+      - name: 校验题库资产（android/assets/quiz.db）
+        run: |
+          set -euo pipefail
+          BANK="$GITHUB_WORKSPACE/android/assets/quiz.db"
+          test -f "$BANK"
+          ls -l "$BANK"
+          echo "quiz.db 字节数：$(stat -c%s "$BANK")"
+          echo "quiz.db SHA256：$(sha256sum "$BANK" | awk '{print toupper($1)}')"
+          test "$(stat -c%s "$BANK")" = "565248"
+          test "$(sha256sum "$BANK" | awk '{print toupper($1)}')" = "8943EC01805C6876B0671F3278CF9E00749E12A01E1468D1F3B105BD74176533"
+
       - name: 打包 debug APK（pyside6-android-deploy）
-        working-directory: phase0_probe
+        working-directory: android
         run: |
           set -x
           export PATH="$RUNNER_TEMP/deploy-venv/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
@@ -159,6 +180,8 @@ jobs:
           SIZE_MB=$(du -m "$APK" | cut -f1)
           echo "APK_SIZE_MB=$SIZE_MB"
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
+          echo "===== 题库资产打包检查 ====="
+          unzip -l "$APK" | grep -Ei 'quiz\.db|private|assets/' || echo "(quiz.db 不在 APK 顶层，应位于 private 归档内)"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5 || true
 
       - name: 失败诊断（OOM / 磁盘 / 关键日志）
@@ -176,7 +199,8 @@ jobs:
           name: phase0-apk
           path: |
             **/*.apk
-            phase0_probe/pysidedeploy.spec
+            android/pysidedeploy.spec
+            android/assets/quiz.db.sha256
             wheels/*.whl
             wheels/SHA256SUMS
             ${{ runner.temp }}/deploy.log
