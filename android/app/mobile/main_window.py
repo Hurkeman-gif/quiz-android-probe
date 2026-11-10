@@ -284,7 +284,9 @@ class MobileMainWindow(QWidget):
         bar = QWidget()
         bar.setObjectName("bottomBar")
         bh = QHBoxLayout(bar)
-        bh.setContentsMargins(12, 8, 12, 12)
+        # 底部多留 32px：Android 手势条/导航栏会吞掉贴底的点击，
+        # 按钮若贴到窗口最底边，用户点按钮下半截会没反应。
+        bh.setContentsMargins(12, 8, 12, 44)
         bh.setSpacing(10)
         self.prev_button = QPushButton("上一题")
         self.prev_button.setObjectName("navBtn")
