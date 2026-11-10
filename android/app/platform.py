@@ -19,8 +19,19 @@ BANK_FILENAME = "quiz.db"
 
 
 def is_android() -> bool:
-    """是否运行在 Android（python-for-android 环境下 sys.platform == 'android'）。"""
-    return sys.platform == "android"
+    """是否运行在 Android。
+
+    Python 3.11/3.12 在 Android 上 sys.platform 仍是 "linux"（3.13 才改成 "android"），
+    所以不能只看 sys.platform；python-for-android 的启动器一定会设置 ANDROID_* 环境变量。
+    """
+    if sys.platform == "android":
+        return True
+    return bool(
+        os.environ.get("ANDROID_ARGUMENT")
+        or os.environ.get("ANDROID_PRIVATE")
+        or os.environ.get("ANDROID_APP_PATH")
+        or os.environ.get("ANDROID_BOOTLOGO")
+    )
 
 
 def app_data_dir() -> str:

@@ -181,7 +181,12 @@ jobs:
           echo "APK_SIZE_MB=$SIZE_MB"
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
           echo "===== 题库资产打包检查 ====="
-          unzip -l "$APK" | grep -Ei 'quiz\.db|private|assets/' || echo "(quiz.db 不在 APK 顶层，应位于 private 归档内)"
+          if ! unzip -l "$APK" | grep -qi 'quiz\.db'; then
+            echo "错误：APK 内未找到 quiz.db（assets 未被打包），请检查 source.include_exts"
+            unzip -l "$APK" | head -60
+            exit 1
+          fi
+          unzip -l "$APK" | grep -Ei 'quiz\.db' || true
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5 || true
 
       - name: 失败诊断（OOM / 磁盘 / 关键日志）
