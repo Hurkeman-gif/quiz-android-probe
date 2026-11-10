@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QScroller,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 COLUMNS = 5
 BUTTON_SIZE = 46
+BUTTON_HEIGHT = 48
 PANEL_TITLE = "题号导航"
 
 STATE_UNANSWERED = "unanswered"
@@ -49,7 +51,9 @@ class NumberButton(QPushButton):
         self.setText("")
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setMinimumSize(BUTTON_SIZE, BUTTON_SIZE)
+        # 宽度随列拉伸、高度固定：整行自适应屏宽，不留过宽或过窄的边距
+        self.setMinimumSize(BUTTON_SIZE, BUTTON_HEIGHT)
+        self.setFixedHeight(BUTTON_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         font = self.font()
         font.setPointSizeF(11.5)
@@ -69,25 +73,51 @@ class NumberButton(QPushButton):
         painter.setRenderHint(QPainter.Antialiasing, True)
         # 先铺面板底色，避免圆角外残留上一帧像素
         painter.fillRect(self.rect(), QColor(CARD_BG))
-        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+
+        # 当前题：整块外侧画一圈蓝环（不覆盖作答颜色），
+        # 作答状态：内缩 3px 填充绿/红/灰，两种信息互不干扰。
+        ring = 3.0 if self.current else 0.0
+        rect = QRectF(self.rect()).adjusted(
+            1.0 + ring, 1.0 + ring, -1.0 - ring, -1.0 - ring)
         path = QPainterPath()
         path.addRoundedRect(rect, 10.0, 10.0)
-        # 已答用填充色（绿/红），当前题用蓝色描边高亮：
-        # 这样「当前题又答过」时既能看出结果，也能看出当前题。
         if self.state == STATE_UNANSWERED:
             fill, text = (CURRENT_FILL if self.current
                           else FILL[STATE_UNANSWERED])
         else:
             fill, text = FILL[self.state]
         painter.fillPath(path, QColor(fill))
-        pen = QPen(QColor(CURRENT_BORDER) if self.current else QColor(fill))
-        pen.setWidthF(3.0 if self.current else 1.0)
+        pen = QPen(QColor(fill))
+        pen.setWidthF(1.0)
         painter.setPen(pen)
         painter.drawPath(path)
+
+        if self.current:
+            ring_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+            ring_path = QPainterPath()
+            ring_path.addRoundedRect(ring_rect, 13.0, 13.0)
+            ring_pen = QPen(QColor(CURRENT_BORDER))
+            ring_pen.setWidthF(3.0)
+            painter.setPen(ring_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(ring_path)
         painter.setPen(QColor(text))
         painter.setFont(self.font())
         painter.drawText(self.rect(), Qt.AlignCenter, str(self.number))
         painter.end()
+
+
+class _ScrollArea(QScrollArea):
+    """滚动容器：滚动后强制整块重绘。
+
+    Android 上 QAbstractScrollArea 默认用位块搬移（blit）滚动，
+    与自绘按钮叠加时会留下上一帧的残影（屏幕左侧出现被裁切的数字）。
+    这里在父类滚动之后再整块 update()，用一次全量重绘换掉残影。
+    """
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self.viewport().update()
 
 
 class _Card(QWidget):
@@ -124,7 +154,7 @@ class NumberPanel(QWidget):
     # ---------------------------------------------------------------- UI
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 64, 14, 56)
+        outer.setContentsMargins(16, 60, 16, 56)
         outer.setSpacing(0)
 
         self.card = _Card(self)
@@ -154,7 +184,7 @@ class NumberPanel(QWidget):
         title_row.addWidget(self.close_button)
         card_layout.addLayout(title_row)
 
-        self.scroll = QScrollArea()
+        self.scroll = _ScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -168,12 +198,19 @@ class NumberPanel(QWidget):
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
             " background: transparent; }")
 
+        # 手指滑动：没有它就只能拖右侧细滚动条
+        QScroller.grabGesture(
+            self.scroll.viewport(),
+            QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+
         self.body = QWidget()
         self.body.setStyleSheet("background: transparent;")
+        self.body.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                QSizePolicy.Policy.Minimum)
         self.grid = QGridLayout(self.body)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(10)
-        self.grid.setVerticalSpacing(10)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
         for col in range(COLUMNS):
             self.grid.setColumnStretch(col, 1)
         self.scroll.setWidget(self.body)
@@ -225,6 +262,8 @@ class NumberPanel(QWidget):
         self.grid.addWidget(spacer, rows, 0, 1, COLUMNS)
         self.refresh_states()
         self.scroll.verticalScrollBar().setValue(0)
+        self.body.update()
+        self.scroll.viewport().update()
         if self._buttons:
             idx = max(0, min(self._session.current_index, len(self._buttons) - 1))
             self.scroll.ensureWidgetVisible(self._buttons[idx], 0, 80)
