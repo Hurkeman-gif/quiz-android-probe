@@ -296,7 +296,8 @@ class MobileMainWindow(QWidget):
         self.index_label.setText(f"第 {index + 1} 题 / 共 {total} 题")
         self.stats_label.setText(
             f"已答 {stats['answered_count']} · 答对 {stats['correct_count']} · "
-            f"答错 {stats['wrong_count']} · 正确率 {stats['accuracy_text']}")
+            f"答错 {stats['wrong_count']} · 正确率 {stats['accuracy_text']}\n"
+            f"DBG {self.quiz_view.debug_metrics()}")
         self._update_buttons(all_answered)
 
     def _update_buttons(self, all_answered):

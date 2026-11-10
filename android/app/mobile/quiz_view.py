@@ -11,7 +11,8 @@
 只负责渲染与交互：判定结果与统计全部交给 app.session.PracticeSession，
 本视图不保存进度、不写错题本、不写历史记录。
 """
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -62,6 +63,32 @@ class OptionCard(QPushButton):
         row.addWidget(self.key_label, 0, Qt.AlignTop)
         row.addWidget(self.text_label, 1)
 
+    # 卡片底色自己用 QPainter 画：不依赖 QSS 的 border-radius 九宫格绘制，
+    # 避免高 DPI / 局部重绘时色块与圆角错位（表现为左侧缺角、整块向右偏移）。
+    def paintEvent(self, event):
+        opt = self.property("opt")
+        if opt == "correct":
+            fill, border, width = QColor("#16A34A"), QColor("#16A34A"), 1.0
+        elif opt == "wrong":
+            fill, border, width = QColor("#DC2626"), QColor("#DC2626"), 1.0
+        elif opt == "picked":
+            fill, border, width = QColor("#E8F1FF"), QColor("#2563EB"), 2.0
+        elif opt == "dim":
+            fill, border, width = QColor("#F3F4F6"), QColor("#E5E7EB"), 1.0
+        else:
+            fill, border, width = QColor("#FFFFFF"), QColor("#D5DCE6"), 1.0
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 14.0, 14.0)
+        painter.fillPath(path, fill)
+        pen = QPen(border)
+        pen.setWidthF(width)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.end()
+
     def set_state(self, state: str):
         if self.property("opt") == state:
             return
@@ -71,6 +98,7 @@ class OptionCard(QPushButton):
             style.unpolish(widget)
             style.polish(widget)
         self.update()
+        self.repaint()
 
 
 class MobileQuizView(QWidget):
@@ -203,7 +231,9 @@ class MobileQuizView(QWidget):
         body = self.scroll.widget()
         if body is not None:
             body.update()
+            body.repaint()
         self.scroll.viewport().update()
+        self.scroll.viewport().repaint()
         self.update()
 
     def _sync_heights(self):
@@ -254,6 +284,9 @@ class MobileQuizView(QWidget):
 
         self._box.activate()
         body.setMinimumHeight(self._box.sizeHint().height())
+        # 内容宽度钉死在视口宽度上：内容一旦比视口宽就会被横向裁掉（左侧缺角/缺字）
+        if body.width() != width:
+            body.setFixedWidth(width)
         body.update()
 
     # ------------------------------------------------------------ 渲染
@@ -336,6 +369,7 @@ class MobileQuizView(QWidget):
         self.session.record_answer(question["id"], correct, selected)
         self._apply_states(correct, selected, question)
         self._show_feedback(correct, question)
+        self.refresh_layout()
         self.answered.emit(correct)
         self.statsChanged.emit()
         return correct
@@ -365,7 +399,23 @@ class MobileQuizView(QWidget):
         text = (question.get("explanation") or "").strip()
         self.explanation_label.setText(text if text else "暂无解析")
         self.feedback_box.show()
-        self.feedback_box.adjustSize()
+        # 反馈区显示后立刻激活外层布局；否则只做局部重绘，色块与文字会整体错位
+        self._box.invalidate()
+        self._box.activate()
 
     def _hide_feedback(self):
         self.feedback_box.hide()
+
+    # ------------------------------------------------------------ 调试图（临时）
+    def debug_metrics(self):
+        body = self.scroll.widget()
+        parts = ["vp=%d" % self.scroll.viewport().width()]
+        if body is not None:
+            parts.append("body=%d,%d,%d" % (body.x(), body.y(), body.width()))
+        if self._buttons:
+            card = self._buttons[0]
+            parts.append("card0=%d,%d,%d" % (card.x(), card.y(), card.width()))
+        parts.append("stem_x=%d" % self.stem_label.x())
+        parts.append("fb=%d,%d" % (self.feedback_box.x(), self.feedback_box.width()))
+        parts.append("rl=%d,%d" % (self.result_label.x(), self.result_label.width()))
+        return " ".join(parts)
