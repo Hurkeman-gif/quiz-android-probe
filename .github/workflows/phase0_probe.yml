@@ -97,6 +97,11 @@ jobs:
           export PATH="$LATEST_DIR/bin:$PATH"
           echo "sdkmanager version: $($LATEST_DIR/bin/sdkmanager --version)"
           echo "$LATEST_DIR/bin" >> $GITHUB_PATH
+          # buildozer 1.5.0 只认 $ANDROID_HOME/tools/bin/sdkmanager，这里补兼容软链
+          mkdir -p "$SDK_ROOT/tools/bin"
+          ln -sf "$LATEST_DIR/bin/sdkmanager" "$SDK_ROOT/tools/bin/sdkmanager"
+          ln -sf "$LATEST_DIR/bin/avdmanager" "$SDK_ROOT/tools/bin/avdmanager"
+          ls -l "$SDK_ROOT/tools/bin"
 
       - name: 下载官方 Android 轮子并记录 sha256
         run: |
