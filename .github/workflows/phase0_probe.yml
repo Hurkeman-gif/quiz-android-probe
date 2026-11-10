@@ -103,6 +103,7 @@ jobs:
         working-directory: phase0_probe
         run: |
           set -x
+          export PATH="$RUNNER_TEMP/deploy-venv/bin:$PATH"
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name Phase0Probe             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名）
