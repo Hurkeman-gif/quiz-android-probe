@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 CORRECT_TEXT = "回答正确"
 WRONG_TEXT = "回答错误"
+PAGE_BG = "#F5F7FA"
 
 
 class OptionCard(QPushButton):
@@ -79,6 +80,9 @@ class OptionCard(QPushButton):
             fill, border, width = QColor("#FFFFFF"), QColor("#D5DCE6"), 1.0
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        # 先用页面底色铺满整个控件：圆角以外的四个角落如果不清，
+        # 会留下上一帧（白卡）的像素，看起来像缺角。
+        painter.fillRect(self.rect(), QColor(PAGE_BG))
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect, 14.0, 14.0)
@@ -235,6 +239,19 @@ class MobileQuizView(QWidget):
         self.scroll.viewport().update()
         self.scroll.viewport().repaint()
         self.update()
+        self.force_repaint()
+
+    def force_repaint(self):
+        """整窗重绘一次。
+
+        Android 上只提交局部脏区域时，Qt 的图层合成偶发把一块区域画到
+        偏移位置（表现为文字缺笔画、圆角缺角、整块右移）。整窗重绘代价很小，
+        但能保证显示与布局完全对齐。
+        """
+        win = self.window()
+        if win is not None:
+            win.update()
+            win.repaint()
 
     def _sync_heights(self):
         body = self.scroll.widget()
@@ -405,17 +422,3 @@ class MobileQuizView(QWidget):
 
     def _hide_feedback(self):
         self.feedback_box.hide()
-
-    # ------------------------------------------------------------ 调试图（临时）
-    def debug_metrics(self):
-        body = self.scroll.widget()
-        parts = ["vp=%d" % self.scroll.viewport().width()]
-        if body is not None:
-            parts.append("body=%d,%d,%d" % (body.x(), body.y(), body.width()))
-        if self._buttons:
-            card = self._buttons[0]
-            parts.append("card0=%d,%d,%d" % (card.x(), card.y(), card.width()))
-        parts.append("stem_x=%d" % self.stem_label.x())
-        parts.append("fb=%d,%d" % (self.feedback_box.x(), self.feedback_box.width()))
-        parts.append("rl=%d,%d" % (self.result_label.x(), self.result_label.width()))
-        return " ".join(parts)

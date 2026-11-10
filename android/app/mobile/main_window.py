@@ -296,9 +296,20 @@ class MobileMainWindow(QWidget):
         self.index_label.setText(f"第 {index + 1} 题 / 共 {total} 题")
         self.stats_label.setText(
             f"已答 {stats['answered_count']} · 答对 {stats['correct_count']} · "
-            f"答错 {stats['wrong_count']} · 正确率 {stats['accuracy_text']}\n"
-            f"DBG {self.quiz_view.debug_metrics()}")
+            f"答错 {stats['wrong_count']} · 正确率 {stats['accuracy_text']}")
         self._update_buttons(all_answered)
+        self._force_repaint()
+
+    def _force_repaint(self):
+        """标题栏与统计文字同样会被 Android 的局部重绘牵连（数字缺笔画），
+        这里整窗重绘一次，并再排一次 0ms 重绘兜住布局刚结算完的那一帧。"""
+        self.update()
+        self.repaint()
+        QTimer.singleShot(0, self._repaint_window)
+
+    def _repaint_window(self):
+        self.update()
+        self.repaint()
 
     def _update_buttons(self, all_answered):
         question = self.session.current_question() if self.session else None
