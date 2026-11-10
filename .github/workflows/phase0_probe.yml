@@ -79,6 +79,25 @@ jobs:
           ls "$QT_ROOT/$QT_VERSION"
           du -sh "$QT_ROOT"
 
+      - name: 安装 Android Command-line Tools
+        run: |
+          set -euo pipefail
+          SDK_ROOT="$ANDROID_HOME"
+          CMDLINE_TOOLS_DIR="$SDK_ROOT/cmdline-tools"
+          LATEST_DIR="$CMDLINE_TOOLS_DIR/latest"
+          rm -rf "$CMDLINE_TOOLS_DIR"
+          mkdir -p "$LATEST_DIR"
+          TEMP_ZIP="$RUNNER_TEMP/cmdline-tools.zip"
+          TEMP_UNZIP="$RUNNER_TEMP/cmdline-tools-unzip"
+          curl -fsSL -o "$TEMP_ZIP" \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q "$TEMP_ZIP" -d "$TEMP_UNZIP"
+          mv "$TEMP_UNZIP/cmdline-tools/"* "$LATEST_DIR/"
+          chmod +x "$LATEST_DIR/bin/"*
+          export PATH="$LATEST_DIR/bin:$PATH"
+          echo "sdkmanager version: $($LATEST_DIR/bin/sdkmanager --version)"
+          echo "$LATEST_DIR/bin" >> $GITHUB_PATH
+
       - name: 下载官方 Android 轮子并记录 sha256
         run: |
           set -euo pipefail
@@ -105,7 +124,7 @@ jobs:
         working-directory: phase0_probe
         run: |
           set -x
-          export PATH="$RUNNER_TEMP/deploy-venv/bin:$PATH"
+          export PATH="$RUNNER_TEMP/deploy-venv/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name Phase0Probe             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名）
