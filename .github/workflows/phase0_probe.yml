@@ -144,6 +144,9 @@ jobs:
         run: |
           set -x
           export PATH="$RUNNER_TEMP/deploy-venv/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          # 让 buildozer 认得出「已在虚拟环境里」，否则它给 p4a 装依赖时加 --user，
+          # 与 venv 里的 wheel 版本冲突会直接报错退出（Will not install to the user site ...）
+          export VIRTUAL_ENV="$RUNNER_TEMP/deploy-venv"
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name Phase0Probe             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名）
