@@ -214,6 +214,11 @@ jobs:
           # 出现后立刻补丁 qt bootstrap 的 PythonActivity.java（常亮 + 返回键转发）。
           # 注意：stdout 不能继承给 tee，否则 tee 会一直等这个后台进程退出，
           # 导致整个步骤被拖到 watch 超时。日志单独写文件，之后打印。
+          # 清掉上一次构建可能留下的 dists / bootstrap_builds 与旧 APK：
+          # 否则 gradle 会复用未打补丁的编译缓存，补丁源码也进不了 dex。
+          rm -rf "$PWD/.buildozer/android/platform/build-arm64-v8a/build/bootstrap_builds" \
+                 "$PWD/.buildozer/android/platform/build-arm64-v8a/dists" \
+                 "$PWD"/quiz-*.apk "$PWD"/*.apk
           python3 "$GITHUB_WORKSPACE/android/tools/patch_p4a_java.py" \
               --watch --timeout 1800 --marker "$RUNNER_TEMP/p4a_patch_done" \
               > "$RUNNER_TEMP/patcher.log" 2>&1 &
@@ -229,10 +234,20 @@ jobs:
           fi
           echo "p4a Java 补丁生效：$(cat "$RUNNER_TEMP/p4a_patch_done")"
           # 端到端校验：补丁必须真的进了 dex，否则常亮/返回键在真机上依旧失效
-          APK_TMP=$(find "$GITHUB_WORKSPACE" -name '*.apk' -type f | head -n 1)
+          APK_TMP=$(find "$GITHUB_WORKSPACE" -name 'quiz-*-debug.apk' -type f | head -n 1)
           echo "临时 APK：$APK_TMP"
-          unzip -p "$APK_TMP" "classes*.dex" | grep -aq "back_key.flag" \
+          test -n "$APK_TMP"
+          DEX_TMP="$RUNNER_TEMP/dex.bin"
+          unzip -p "$APK_TMP" "classes*.dex" > "$DEX_TMP"
+          ls -l "$DEX_TMP"
+          grep -aq "back_key.flag" "$DEX_TMP" \
               || { echo "错误：dex 里没有 back_key.flag，Java 补丁未进入编译"; exit 1; }
+          grep -aq "external_backup_dir.txt" "$DEX_TMP" \
+              || { echo "错误：dex 里没有 external_backup_dir.txt"; exit 1; }
+          if grep -aq "Click again to close the app" "$DEX_TMP"; then
+              echo "错误：dex 里还是未补丁的 onKeyDown（旧 Toast 文案仍在）"
+              exit 1
+          fi
           echo "Java 补丁已进入 APK（dex 校验通过）"
 
       - name: 用正式密钥重新签名（release 包）
