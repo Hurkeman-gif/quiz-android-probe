@@ -212,11 +212,17 @@ jobs:
           export VIRTUAL_ENV="$RUNNER_TEMP/deploy-venv"
           # pythonforandroid 要等 deploy 开始后才会被装进环境，所以边构建边等它出现，
           # 出现后立刻补丁 qt bootstrap 的 PythonActivity.java（常亮 + 返回键转发）。
+          # 注意：stdout 不能继承给 tee，否则 tee 会一直等这个后台进程退出，
+          # 导致整个步骤被拖到 watch 超时。日志单独写文件，之后打印。
           python3 "$GITHUB_WORKSPACE/android/tools/patch_p4a_java.py" \
-              --watch --timeout 1800 --marker "$RUNNER_TEMP/p4a_patch_done" &
+              --watch --timeout 1800 --marker "$RUNNER_TEMP/p4a_patch_done" \
+              > "$RUNNER_TEMP/patcher.log" 2>&1 &
           P4A_PATCHER=$!
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name AnswerTraining             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
           wait "$P4A_PATCHER" || true
+          echo "----- patcher.log -----"
+          cat "$RUNNER_TEMP/patcher.log" || true
+          echo "-----------------------"
           if [ ! -f "$RUNNER_TEMP/p4a_patch_done" ]; then
               echo "错误：p4a 的 PythonActivity.java 补丁没有生效（常亮 / 返回键会失效）"
               exit 1

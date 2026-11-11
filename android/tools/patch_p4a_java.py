@@ -80,8 +80,25 @@ def _site_roots() -> list:
     return out
 
 
+def _buildozer_p4a_dirs() -> list:
+    """pyside6-android-deploy / buildozer 会把 p4a 克隆到 .buildozer 平台目录下。"""
+    dirs = []
+    bases = [pathlib.Path.cwd(), pathlib.Path.cwd() / "android"]
+    bases.extend(_roots())
+    bases.extend([r / "android" for r in _roots()])
+    for base in bases:
+        clone = base / ".buildozer" / "android" / "platform" / "python-for-android"
+        cand = clone / "pythonforandroid"
+        if cand.is_dir() and cand not in dirs:
+            dirs.append(cand)
+    return dirs
+
+
 def _p4a_dirs() -> list:
     dirs = []
+    for cand in _buildozer_p4a_dirs():
+        if cand not in dirs:
+            dirs.append(cand)
     for base in _site_roots():
         for cand in (base / "site-packages" / "pythonforandroid", base / "pythonforandroid"):
             if cand.is_dir() and cand not in dirs:
@@ -148,6 +165,7 @@ def main() -> int:
         if not args.watch or time.time() > deadline:
             print("PATCH_JAVA 未找到 PythonActivity.java")
             print("  搜索的 site 根：", [str(p) for p in _site_roots()])
+            print("  cwd：", os.getcwd())
             print("  找到的 pythonforandroid：", [str(p) for p in _p4a_dirs()])
             return 1
         time.sleep(2)
