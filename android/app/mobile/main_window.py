@@ -22,10 +22,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import database, progress_store, wrongbook
+from .. import database, progress_store, random_picker, wrongbook
 from ..models import TYPE_LABELS
 from ..session import (
     MODE_NORMAL,
+    MODE_RANDOM,
     MODE_WRONGBOOK,
     VIEW_FINISH,
     VIEW_QUIZ,
@@ -34,9 +35,10 @@ from ..session import (
 from .confirm_panel import ConfirmPanel
 from .finish_view import FinishView
 from .history_panel import HistoryDetailPanel, HistoryPanel
-from .more_panel import MorePanel
+from .menu_drawer import MenuDrawer
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
+from .random_panel import SCOPE_ALL, RandomSetupPanel
 from .wrongbook_panel import WrongbookPanel
 
 DELAY_CORRECT_MS = 800
@@ -385,6 +387,96 @@ QWidget#recordList {
     background: #FFFFFF;
     border: none;
 }
+/* 主菜单抽屉 */
+#drawerTitle {
+    font-size: 17pt;
+    font-weight: 700;
+    color: #111827;
+}
+#drawerSub {
+    font-size: 10.5pt;
+    color: #6B7280;
+}
+#drawerSection {
+    font-size: 10.5pt;
+    color: #6B7280;
+    padding-top: 2px;
+}
+QPushButton#drawerItem {
+    min-height: 52px;
+    border-radius: 10px;
+    padding-left: 16px;
+    text-align: left;
+    font-size: 13.5pt;
+    background: #F3F4F6;
+    color: #111827;
+    border: 1px solid #E5E7EB;
+}
+QPushButton#drawerItem:pressed {
+    background: #E5E7EB;
+}
+QPushButton#drawerDanger {
+    min-height: 48px;
+    border-radius: 10px;
+    font-size: 12.5pt;
+    font-weight: 600;
+    background: #FEF2F2;
+    color: #B91C1C;
+    border: 1px solid #FECACA;
+}
+QPushButton#drawerDanger:pressed {
+    background: #FEE2E2;
+}
+QPushButton#drawerDanger:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+}
+/* 随机设置弹层 */
+QPushButton#segBtn {
+    min-height: 38px;
+    border-radius: 9px;
+    padding: 0 6px;
+    font-size: 11pt;
+    background: #F3F4F6;
+    color: #4B5563;
+    border: 1px solid #E5E7EB;
+}
+QPushButton#segBtn[active="true"] {
+    background: #2563EB;
+    color: #FFFFFF;
+    border: 1px solid #2563EB;
+    font-weight: 700;
+}
+QPushButton#segBtn:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+}
+QLineEdit#countEdit {
+    min-height: 42px;
+    border-radius: 9px;
+    padding: 0 12px;
+    font-size: 13pt;
+    background: #FFFFFF;
+    color: #111827;
+    border: 1px solid #D1D5DB;
+}
+QLineEdit#countEdit:disabled {
+    background: #F3F4F6;
+    color: #6B7280;
+}
+QCheckBox#allCheck {
+    font-size: 12pt;
+    color: #374151;
+    spacing: 8px;
+}
+#randomHint {
+    font-size: 10.5pt;
+    color: #6B7280;
+}
+#randomHint[state="error"] {
+    color: #DC2626;
+}
 """
 
 
@@ -418,11 +510,18 @@ class MobileMainWindow(QWidget):
         self._confirm_action = None
         self.confirm_panel = ConfirmPanel(self)
         self.confirm_panel.confirmed.connect(self._on_confirm_confirmed)
-        # 错题本 / 答题记录：同样是同窗口弹层（Android 上独立窗口收不到触摸）
-        self.more_panel = MorePanel(self)
-        self.more_panel.wrongbookRequested.connect(self.open_wrongbook_panel)
-        self.more_panel.historyRequested.connect(self.open_history_panel)
-        self.more_panel.closeRequested.connect(self.close_overlays)
+        # 主菜单抽屉 / 随机练习设置：同样是同窗口弹层（Android 上独立窗口收不到触摸）
+        self.drawer_panel = MenuDrawer(self)
+        self.drawer_panel.normalRequested.connect(self._on_drawer_normal)
+        self.drawer_panel.randomRequested.connect(self._on_drawer_random)
+        self.drawer_panel.wrongbookRequested.connect(self.open_wrongbook_panel)
+        self.drawer_panel.historyRequested.connect(self.open_history_panel)
+        self.drawer_panel.clearProgressRequested.connect(
+            self._on_clear_progress_requested)
+        self.drawer_panel.closeRequested.connect(self.close_overlays)
+        self.random_panel = RandomSetupPanel(self)
+        self.random_panel.startRequested.connect(self._on_random_start)
+        self.random_panel.closeRequested.connect(self.close_overlays)
         self.wrongbook_panel = WrongbookPanel(self)
         self.wrongbook_panel.startPractice.connect(self._start_wrongbook_practice)
         self.wrongbook_panel.removeRequested.connect(
@@ -454,9 +553,17 @@ class MobileMainWindow(QWidget):
         hv.setContentsMargins(14, 10, 14, 8)
         hv.setSpacing(4)
 
-        # 第一行：题型分段按钮（当前题型高亮，点击即切题） + 题号导航开关
+        # 第一行：☰ 主菜单 + 题型分段按钮（当前题型高亮，点击即切题） + 题号导航
         row = QHBoxLayout()
         row.setSpacing(6)
+        self.menu_button = QPushButton("☰")
+        self.menu_button.setObjectName("navToggleBtn")
+        self.menu_button.setFixedWidth(46)
+        self.menu_button.setMinimumHeight(34)
+        self.menu_button.setFocusPolicy(Qt.NoFocus)
+        self.menu_button.setCursor(Qt.PointingHandCursor)
+        self.menu_button.clicked.connect(self.open_drawer)
+        row.addWidget(self.menu_button, 0)
         self.type_buttons = {}
         for qtype in self.TYPE_ORDER:
             btn = QPushButton(TYPE_LABELS[qtype])
@@ -475,13 +582,6 @@ class MobileMainWindow(QWidget):
         self.nav_button.setMinimumHeight(34)
         self.nav_button.clicked.connect(self.open_number_panel)
         row.addWidget(self.nav_button, 0)
-        self.more_button = QPushButton("更多")
-        self.more_button.setObjectName("navToggleBtn")
-        self.more_button.setFocusPolicy(Qt.NoFocus)
-        self.more_button.setCursor(Qt.PointingHandCursor)
-        self.more_button.setMinimumHeight(34)
-        self.more_button.clicked.connect(self.open_more_panel)
-        row.addWidget(self.more_button, 0)
         hv.addLayout(row)
 
         # 第二行：题号/总数 + 正确率
@@ -730,7 +830,11 @@ class MobileMainWindow(QWidget):
         total = self.session.count()
         index = self.session.current_index
         all_answered = self.session.is_all_answered()
-        prefix = "错题本练习 · " if self.session.mode == MODE_WRONGBOOK else ""
+        prefix = ""
+        if self.session.mode == MODE_WRONGBOOK:
+            prefix = "错题本练习 · "
+        elif self.session.mode == MODE_RANDOM:
+            prefix = "随机练习 · "
         if all_answered or self.session.view_mode == VIEW_FINISH:
             self.index_label.setText(f"{prefix}练习完成 · 共 {total} 题")
         else:
@@ -745,10 +849,10 @@ class MobileMainWindow(QWidget):
         self._force_repaint()
 
     def _update_type_buttons(self):
-        """题型按钮高亮当前题型（错题本练习为混合题型，不高亮）。"""
-        wrongbook_mode = bool(self.session and self.session.mode == MODE_WRONGBOOK)
+        """题型按钮高亮当前题型（随机/错题本练习可能是混合题型，不高亮）。"""
+        mixed_mode = bool(self.session and self.session.mode != MODE_NORMAL)
         for qtype, btn in self.type_buttons.items():
-            active = (not wrongbook_mode) and qtype == self.current_type
+            active = (not mixed_mode) and qtype == self.current_type
             btn.setProperty("active", "true" if active else "false")
             style = btn.style()
             style.unpolish(btn)
@@ -787,7 +891,7 @@ class MobileMainWindow(QWidget):
     def _manual_submit_allowed(self):
         if not self.session:
             return False
-        if self.session.mode != MODE_NORMAL:
+        if self.session.mode not in (MODE_NORMAL, MODE_RANDOM):
             return False
         if self.session.manual_submitted:
             return False
@@ -899,10 +1003,18 @@ class MobileMainWindow(QWidget):
             return
         self._cancel_auto()
         self.number_panel.set_session(
-            self.session, TYPE_LABELS.get(self.current_type, ""))
+            self.session, self._number_panel_label())
         self.number_panel.setGeometry(self.rect())
         self.number_panel.raise_()
         self.number_panel.show()
+
+    def _number_panel_label(self):
+        mode = self.session.mode if self.session else ""
+        if mode == MODE_RANDOM:
+            return "随机练习"
+        if mode == MODE_WRONGBOOK:
+            return "错题本练习"
+        return TYPE_LABELS.get(self.current_type, "")
 
     def close_number_panel(self):
         self.number_panel.hide()
@@ -913,8 +1025,9 @@ class MobileMainWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        for name in ("number_panel", "confirm_panel", "more_panel",
-                     "wrongbook_panel", "history_panel", "history_detail_panel"):
+        for name in ("number_panel", "confirm_panel", "drawer_panel",
+                     "random_panel", "wrongbook_panel", "history_panel",
+                     "history_detail_panel"):
             panel = getattr(self, name, None)
             if panel is not None and panel.isVisible():
                 panel.setGeometry(self.rect())
@@ -926,13 +1039,106 @@ class MobileMainWindow(QWidget):
         panel.show()
 
     def close_overlays(self):
-        for panel in (self.more_panel, self.wrongbook_panel, self.history_panel,
-                      self.history_detail_panel):
+        for panel in (self.drawer_panel, self.random_panel, self.wrongbook_panel,
+                      self.history_panel, self.history_detail_panel):
             panel.hide()
 
-    def open_more_panel(self):
+    # ------------------------------------------------------------ 主菜单抽屉
+    def open_drawer(self):
+        self._cancel_auto()
         self.close_overlays()
-        self._show_overlay(self.more_panel)
+        self.drawer_panel.set_context(self._drawer_context())
+        self._show_overlay(self.drawer_panel)
+        self.drawer_panel.refresh_width()
+
+    def _drawer_context(self):
+        """抽屉副标题：当前题库/题型/进度，清空按钮只在有普通练习进度时可用。"""
+        parts = []
+        if self.set_name:
+            parts.append(str(self.set_name))
+        mode = self.session.mode if self.session else ""
+        if mode == MODE_RANDOM:
+            parts.append(f"随机练习 · {self.session.count()} 题")
+        elif mode == MODE_WRONGBOOK:
+            parts.append(f"错题本练习 · {self.session.count()} 题")
+        else:
+            label = TYPE_LABELS.get(self.current_type or "", "")
+            if label:
+                parts.append(label)
+            if self.session:
+                stats = self.session.get_live_stats()
+                parts.append(f"已答 {stats['answered_count']}/{self.session.count()}")
+        return " · ".join(parts)
+
+    def _on_drawer_normal(self):
+        """普通练习：关闭抽屉，回到当前题型的普通练习（随机/错题本模式会被丢弃）。"""
+        self.close_overlays()
+        mode = self.session.mode if self.session else ""
+        if mode != MODE_NORMAL:
+            self.select_type(self.current_type or "single")
+        else:
+            self._refresh_chrome()
+
+    def _on_drawer_random(self):
+        self.close_overlays()
+        self.open_random_panel()
+
+    # ------------------------------------------------------------ 随机练习
+    def open_random_panel(self):
+        self._cancel_auto()
+        self.close_overlays()
+        counts = random_picker.count_pool(self.set_name)
+        self.random_panel.set_context(self.set_name, counts)
+        self._show_overlay(self.random_panel)
+
+    def _on_random_start(self, config):
+        self.close_overlays()
+        self.start_random_practice(
+            config.get("scope", SCOPE_ALL),
+            config.get("count"),
+            bool(config.get("shuffle", True)))
+
+    def start_random_practice(self, scope=SCOPE_ALL, count=None, shuffle=True):
+        """随机练习：按抽题快照出题，绝不写 progress.db（完成时只写 history）。"""
+        self._cancel_auto()
+        self._save_progress_now()
+        self.close_number_panel()
+        questions = random_picker.pick_questions(
+            scope, count, shuffle, set_name=self.set_name)
+        if not questions:
+            self.stats_label.setText("随机练习：当前范围没有可用题目")
+            return
+        self.session = PracticeSession(
+            MODE_RANDOM, questions,
+            random_config={
+                "scope": scope,
+                "count": len(questions),
+                "shuffle": bool(shuffle),
+            })
+        self._ensure_quiz_view()
+        self.quiz_view.set_session(self.session)
+        self._refresh_chrome()
+
+    # ------------------------------------------------------------ 清空进度
+    def _on_clear_progress_requested(self):
+        self.close_overlays()
+        label = TYPE_LABELS.get(self.current_type or "", "当前题型")
+        self._confirm_action = ("clear_progress",)
+        self.confirm_panel.show_confirm(
+            "清空当前进度",
+            f"将清空「{label}」的普通练习进度（作答痕迹与统计），题库与错题本不受影响。是否继续？",
+            "清空", "取消")
+
+    def _do_clear_progress(self):
+        key = (self._bank_key, self.current_type or "single", self.set_name or "")
+        try:
+            progress_store.delete_progress(*key)
+        except Exception:
+            traceback.print_exc()
+            self.stats_label.setText("清空进度失败")
+        if self.session is not None and self.session.mode == MODE_NORMAL:
+            self._start_normal_session(self.current_type or "single")
+        self._refresh_chrome()
 
     # ------------------------------------------------------------ 错题本
     def _wrongbook_rows(self):
@@ -1096,6 +1302,9 @@ class MobileMainWindow(QWidget):
             return
         if self.session.mode == MODE_WRONGBOOK:
             question_type = ""
+        elif self.session.mode == MODE_RANDOM:
+            scope = (self.session.random_config or {}).get("scope", SCOPE_ALL)
+            question_type = "" if scope == SCOPE_ALL else scope
         else:
             question_type = self.current_type or ""
         try:
@@ -1126,3 +1335,5 @@ class MobileMainWindow(QWidget):
             self._do_history_delete(action[1])
         elif kind == "history_clear":
             self._do_history_clear()
+        elif kind == "clear_progress":
+            self._do_clear_progress()
