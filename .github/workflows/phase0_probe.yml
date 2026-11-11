@@ -197,11 +197,22 @@ jobs:
           python3 - <<'PY'
           import os, pathlib, re, sys
 
-          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "deploy-venv" / "lib"
-          cands = list(root.glob("python3*/site-packages/pythonforandroid/bootstraps/qt/build/src/main/java/org/kivy/android/PythonActivity.java"))
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "deploy-venv"
+          cands = [
+              p for p in root.rglob("PythonActivity.java")
+              if "bootstraps/qt" in p.as_posix()
+          ]
           if not cands:
-              print("错误：找不到 PythonActivity.java")
+              cands = [
+                  p for p in root.rglob("PythonActivity.java")
+                  if "org/kivy/android" in p.as_posix()
+              ]
+          if not cands:
+              print("错误：找不到 PythonActivity.java，已安装的 pythonforandroid 目录：")
+              for p in root.rglob("pythonforandroid"):
+                  print(" ", p)
               sys.exit(1)
+          print("候选：", [str(p) for p in cands])
           path = cands[0]
           print("PATCH_JAVA", path)
           src = path.read_text(encoding="utf-8")
