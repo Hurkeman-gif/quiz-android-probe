@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -153,6 +152,18 @@ QPushButton#manualBtn:disabled {
     color: #9CA3AF;
     background: #F9FAFB;
     border: 1px solid #E5E7EB;
+}
+QPushButton#resultBtn {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 13pt;
+    font-weight: 600;
+    background: #E8F1FF;
+    color: #1D4ED8;
+    border: 1px solid #BFDBFE;
+}
+QPushButton#resultBtn:pressed {
+    background: #DBEAFE;
 }
 QPushButton#confirmOk {
     min-height: 44px;
@@ -411,8 +422,13 @@ class MobileMainWindow(QWidget):
         self.manual_button = QPushButton("提前交卷")
         self.manual_button.setObjectName("manualBtn")
         self.manual_button.clicked.connect(self.manual_submit)
+        # 全部答完后回到作答区时，用它重新打开完成页，避免无处可点
+        self.result_button = QPushButton("查看结果")
+        self.result_button.setObjectName("resultBtn")
+        self.result_button.clicked.connect(self._show_completion)
         action_row.addWidget(self.submit_button, 1)
         action_row.addWidget(self.manual_button, 1)
+        action_row.addWidget(self.result_button, 1)
         bv.addLayout(action_row)
 
         nav_row = QHBoxLayout()
@@ -644,6 +660,9 @@ class MobileMainWindow(QWidget):
         allowed = self._manual_submit_allowed()
         self.manual_button.setVisible(allowed)
         self.manual_button.setEnabled(allowed)
+        done = bool(has_session and all_answered)
+        self.result_button.setVisible(done)
+        self.result_button.setEnabled(done)
         self.prev_button.setEnabled(has_session and not all_answered and index > 0)
         self.next_button.setEnabled(has_session and not all_answered)
 

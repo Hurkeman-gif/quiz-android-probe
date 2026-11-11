@@ -21,11 +21,11 @@ class _Card(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, False)
 
     def paintEvent(self, event):
+        # 只画圆角内的白底：四角留空，透出下面弹层画的遮罩，视觉上是圆角卡片
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(CARD_BG))
         path = QPainterPath()
-        path.addRoundedRect(self.rect().adjusted(0, 0, -1, -1), CARD_RADIUS, CARD_RADIUS)
+        path.addRoundedRect(self.rect(), CARD_RADIUS, CARD_RADIUS)
         painter.fillPath(path, QColor(CARD_BG))
         painter.end()
         super().paintEvent(event)
