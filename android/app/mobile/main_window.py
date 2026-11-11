@@ -35,7 +35,7 @@ from ..session import (
 from .confirm_panel import ConfirmPanel
 from .finish_view import FinishView
 from .history_panel import HistoryDetailPanel, HistoryPanel
-from .menu_drawer import MenuDrawer
+from .menu_drawer import MenuDrawer, MenuIconButton
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
 from .random_panel import SCOPE_ALL, RandomSetupPanel
@@ -556,8 +556,7 @@ class MobileMainWindow(QWidget):
         # 第一行：☰ 主菜单 + 题型分段按钮（当前题型高亮，点击即切题） + 题号导航
         row = QHBoxLayout()
         row.setSpacing(6)
-        self.menu_button = QPushButton("☰")
-        self.menu_button.setObjectName("navToggleBtn")
+        self.menu_button = MenuIconButton()
         self.menu_button.setFixedWidth(46)
         self.menu_button.setMinimumHeight(34)
         self.menu_button.setFocusPolicy(Qt.NoFocus)

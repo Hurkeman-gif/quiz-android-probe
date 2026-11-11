@@ -4,11 +4,40 @@
 Android 上不新开窗口（QDialog 收不到触摸），直接在同一个 QWidget 里画遮罩 + 卡片。
 点卡片以外的遮罩区域即关闭。
 """
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .overlay import BACKDROP, OverlayCard
+
+
+class MenuIconButton(QPushButton):
+    """左上角「☰」按钮。
+
+    Android 默认字体没有 U+2630 这个字符，直接写文字会显示成方框，
+    这里改成自绘三条圆头横线，底色/边框仍由 QSS 的 #navToggleBtn 提供。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self.setObjectName("navToggleBtn")
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor("#1D4ED8"), 2.0)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        half = 7.0
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        for dy in (-5.0, 0.0, 5.0):
+            painter.drawLine(QPointF(cx - half, cy + dy),
+                             QPointF(cx + half, cy + dy))
+        painter.end()
 
 
 class MenuDrawer(QWidget):
@@ -91,8 +120,8 @@ class MenuDrawer(QWidget):
         self.clear_button.setEnabled(bool(allow_clear))
 
     def refresh_width(self):
-        width = int(self.width() * 0.8)
-        width = max(240, min(320, width))
+        width = int(self.width() * 0.78)
+        width = max(260, min(400, width))
         self.card.setFixedWidth(width)
 
     def resizeEvent(self, event):
