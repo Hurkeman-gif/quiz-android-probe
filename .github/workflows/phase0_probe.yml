@@ -179,22 +179,8 @@ jobs:
               r'self\.set_value\("app", "package\.domain",\s*f"org\.\{pysidedeploy_config\.title\}"\)',
               'self.set_value("app", "package.domain", "com.answertraining")',
               src)
-          # pyjnius 用来做两件事：屏幕常亮（FLAG_KEEP_SCREEN_ON）与
-          # Android 13+ 返回键接管（OnBackInvokedCallback）。官方 requirements 里没有它。
-          src, n_req = re.subn(
-              r'self\.set_value\("app", "requirements", "python3,shiboken6,PySide6"\)',
-              'self.set_value("app", "requirements", "python3,shiboken6,PySide6,pyjnius")',
-              src)
-          # targetSdk 提到 34：Android 13+ 的预测性返回默认启用，才能注册并收到
-          # OnBackInvokedCallback（targetSdk < 33 时该回调不会被调用）。
-          src, n_api = re.subn(
-              r'self\.set_value\("app", "android\.archs", pysidedeploy_config\.arch\)',
-              'self.set_value("app", "android.archs", pysidedeploy_config.arch)\n'
-              '        self.set_value("app", "android.api", "34")',
-              src)
-          print("PATCH title=%d name=%d domain=%d req=%d api=%d" % (
-              n_title, n_name, n_domain, n_req, n_api))
-          if n_title != 1 or n_name != 1 or n_domain != 1 or n_req != 1 or n_api != 1:
+          print("PATCH title=%d name=%d domain=%d" % (n_title, n_name, n_domain))
+          if n_title != 1 or n_name != 1 or n_domain != 1:
               print("错误：buildozer.py 补丁未全部命中，dump 相关行：")
               for i, line in enumerate(src.splitlines(), 1):
                   if "set_value" in line:
@@ -204,6 +190,71 @@ jobs:
           PY
           echo "===== 补丁后的关键行 ====="
           grep -n 'set_value("app", "title"\|set_value("app", "version"\|set_value("app", "package' "$SPEC_PY" || true
+
+      - name: 补丁 PythonActivity.java（常亮 + 返回键交给应用处理）
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "deploy-venv" / "lib"
+          cands = list(root.glob("python3*/site-packages/pythonforandroid/bootstraps/qt/build/src/main/java/org/kivy/android/PythonActivity.java"))
+          if not cands:
+              print("错误：找不到 PythonActivity.java")
+              sys.exit(1)
+          path = cands[0]
+          print("PATCH_JAVA", path)
+          src = path.read_text(encoding="utf-8")
+
+          # 1) 屏幕常亮：Window 级别 FLAG_KEEP_SCREEN_ON，不需要额外权限，
+          #    也不受 p4a 的 wakelock meta-data 影响。
+          keep = "getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);"
+          if keep not in src:
+              n_keep = src.count("super.onCreate(savedInstanceState);")
+              if n_keep != 1:
+                  print("错误：super.onCreate 命中 %d 次" % n_keep)
+                  sys.exit(1)
+              src = src.replace(
+                  "super.onCreate(savedInstanceState);",
+                  "super.onCreate(savedInstanceState);\n        " + keep,
+                  1)
+          else:
+              print("常亮补丁已存在，跳过")
+
+          # 2) 返回键：p4a 默认是「再按一次退出」的 Toast 逻辑（直接吞掉按键），
+          #    改成把 BACK 转给 Qt 视图，由 Python 侧决定关浮层还是弹确认框。
+          # 用一个标记文件把 BACK 事件传给 Python（轮询读取），
+          # 不依赖 Qt 对 KEYCODE_BACK 的映射，跨 Qt 版本稳定。
+          new_back = (
+              "    long lastBackClick = SystemClock.elapsedRealtime();\n"
+              "    @Override\n"
+              "    public boolean onKeyDown(int keyCode, KeyEvent event) {\n"
+              "        // 返回键转交 Python：写标记文件，Python 侧轮询后决定关浮层 / 二次确认退出\n"
+              "        if (keyCode == KeyEvent.KEYCODE_BACK) {\n"
+              "            try {\n"
+              "                java.io.FileWriter w = new java.io.FileWriter(new java.io.File(getFilesDir(), \"back_key.flag\"), false);\n"
+              "                w.write(String.valueOf(System.currentTimeMillis()));\n"
+              "                w.close();\n"
+              "            } catch (Exception e) {\n"
+              "                Log.e(\"PythonActivity\", \"back flag write failed\", e);\n"
+              "            }\n"
+              "            return true;\n"
+              "        }\n"
+              "        return super.onKeyDown(keyCode, event);\n"
+              "    }\n")
+          src, n_back = re.subn(
+              r"    long lastBackClick = SystemClock\.elapsedRealtime\(\);\s*"
+              r"@Override\s*public boolean onKeyDown\(int keyCode, KeyEvent event\)\s*\{.*?\n    \}\n",
+              lambda m: new_back,
+              src,
+              flags=re.S)
+          print("PATCH_JAVA keep=%d back=%d" % (1 if keep in src else 0, n_back))
+          if n_back != 1:
+              print("错误：onKeyDown 补丁未命中")
+              sys.exit(1)
+          path.write_text(src, encoding="utf-8")
+          PY
+          grep -n "FLAG_KEEP_SCREEN_ON\|KEYCODE_BACK" "$(find "$RUNNER_TEMP/deploy-venv" -name PythonActivity.java -path '*bootstraps/qt*' | head -1)"
 
       - name: 校验题库资产（android/assets/quiz.db）
         run: |

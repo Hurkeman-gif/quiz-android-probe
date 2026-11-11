@@ -1,13 +1,43 @@
 # -*- coding: utf-8 -*-
 """Android 平台适配：屏幕常亮 + 系统返回键接管。
 
-两项能力都依赖 pyjnius；在桌面环境或缺少 pyjnius 时静默降级，
-绝不影响主流程。
+实际生效路径有两条：
+1) 构建期补丁改 p4a 的 PythonActivity.java：Window 加 FLAG_KEEP_SCREEN_ON，
+   并把 BACK 键写成标记文件（见 .github/workflows/phase0_probe.yml）；
+2) 本模块在 Python 侧轮询该标记文件，交给主窗口做「先关浮层 / 再二次确认退出」。
+
+另外保留 pyjnius 版本的实现作为可选增强（没有 pyjnius 时静默降级）。
 """
 from __future__ import annotations
 
+import os
+
 # 注册给系统的回调必须保持引用，否则会被 GC 回收导致返回键失效。
 _keep_alive = []
+
+BACK_FLAG_NAME = "back_key.flag"
+
+
+def back_flag_path():
+    """返回键标记文件路径（由 Java 侧写入）。非 Android 环境返回 None。"""
+    root = os.environ.get("ANDROID_PRIVATE")
+    if not root:
+        return None
+    return os.path.join(root, BACK_FLAG_NAME)
+
+
+def consume_back_flag() -> bool:
+    """检查并清除返回键标记；读到标记返回 True。"""
+    path = back_flag_path()
+    if not path:
+        return False
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def keep_screen_on() -> bool:

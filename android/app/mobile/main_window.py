@@ -514,6 +514,8 @@ class MobileMainWindow(QWidget):
         self._build_ui()
         # 应用级事件过滤器：兜住 Android 返回键（keyPressEvent 未必收得到）。
         QApplication.instance().installEventFilter(self)
+        self._back_poll_timer = None
+        self._install_back_polling()
         self.number_panel = NumberPanel(self)
         self.number_panel.numberChosen.connect(self._on_number_chosen)
         self.number_panel.closeRequested.connect(self.close_number_panel)
@@ -804,6 +806,27 @@ class MobileMainWindow(QWidget):
         super().closeEvent(event)
 
     # ------------------------------------------------------------ 返回键
+    def _install_back_polling(self):
+        """Android：轮询 Java 侧写入的返回键标记（p4a 默认把 BACK 吞掉做「再按退出」）。"""
+        try:
+            from ..android_back import back_flag_path, consume_back_flag
+        except Exception:
+            return
+        if not back_flag_path():
+            return
+        timer = QTimer(self)
+        timer.setInterval(250)
+        timer.timeout.connect(lambda: self._poll_back_flag(consume_back_flag))
+        timer.start()
+        self._back_poll_timer = timer
+
+    def _poll_back_flag(self, consume):
+        try:
+            if consume():
+                self._handle_back_key()
+        except Exception:
+            traceback.print_exc()
+
     def eventFilter(self, obj, event):
         """应用级兜底：Android 返回键可能直接投递给平台窗口，不一定走 keyPressEvent。"""
         if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Back, Qt.Key_Escape):
