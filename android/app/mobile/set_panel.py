@@ -121,12 +121,15 @@ class SetPickerPanel(QWidget):
 
 
 class BackupPanel(QWidget):
-    """数据备份弹层：导出 JSON / 从备份列表导入 / 选择其他文件。"""
+    """数据备份弹层：导出 JSON 到固定目录 / 从备份列表导入 / 刷新列表。
+
+    不使用系统文件选择器（Qt for Android 上会导致主线程死锁、界面假死），
+    备份文件统一放在 Android/data/<包名>/files/backup/ 下。
+    """
 
     exportRequested = Signal()
-    exportAsRequested = Signal()
     importRequested = Signal(str)
-    pickFileRequested = Signal()
+    refreshRequested = Signal()
     closeRequested = Signal()
 
     def __init__(self, parent=None):
@@ -183,6 +186,12 @@ class BackupPanel(QWidget):
         self.status_label.setWordWrap(True)
         lay.addWidget(self.status_label)
 
+        self.hint_label = QLabel(
+            "导入其它备份：先把 .json 文件拷贝到上面的备份目录，再点「刷新」")
+        self.hint_label.setObjectName("panelSub")
+        self.hint_label.setWordWrap(True)
+        lay.addWidget(self.hint_label)
+
         row1 = QHBoxLayout()
         row1.setSpacing(10)
         self.export_button = QPushButton("导出数据")
@@ -195,25 +204,15 @@ class BackupPanel(QWidget):
         self.import_button.setMinimumHeight(48)
         self.import_button.setFocusPolicy(Qt.NoFocus)
         self.import_button.clicked.connect(self._on_import)
+        self.refresh_button = QPushButton("刷新")
+        self.refresh_button.setObjectName("panelGhost")
+        self.refresh_button.setMinimumHeight(48)
+        self.refresh_button.setFocusPolicy(Qt.NoFocus)
+        self.refresh_button.clicked.connect(self._on_refresh)
         row1.addWidget(self.export_button, 2)
         row1.addWidget(self.import_button, 1)
+        row1.addWidget(self.refresh_button, 1)
         lay.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(10)
-        self.export_as_button = QPushButton("导出到其他位置…")
-        self.export_as_button.setObjectName("panelGhost")
-        self.export_as_button.setMinimumHeight(44)
-        self.export_as_button.setFocusPolicy(Qt.NoFocus)
-        self.export_as_button.clicked.connect(self.exportAsRequested.emit)
-        self.pick_button = QPushButton("导入其他文件…")
-        self.pick_button.setObjectName("panelGhost")
-        self.pick_button.setMinimumHeight(44)
-        self.pick_button.setFocusPolicy(Qt.NoFocus)
-        self.pick_button.clicked.connect(self.pickFileRequested.emit)
-        row2.addWidget(self.export_as_button, 1)
-        row2.addWidget(self.pick_button, 1)
-        lay.addLayout(row2)
 
         outer.addWidget(self.card)
 
@@ -257,6 +256,9 @@ class BackupPanel(QWidget):
         path = self.selected_path()
         if path:
             self.importRequested.emit(path)
+
+    def _on_refresh(self):
+        self.refreshRequested.emit()
 
     def paintEvent(self, event):
         painter = QPainter(self)

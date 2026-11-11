@@ -56,10 +56,26 @@ def _writable(directory: str) -> bool:
         return False
 
 
+def _java_external_dir() -> str:
+    """Java 侧（PythonActivity.onCreate）用 getExternalFilesDir 建好的真实目录。"""
+    private = os.environ.get("ANDROID_PRIVATE") or ""
+    if not private:
+        return ""
+    marker = os.path.join(private, "external_backup_dir.txt")
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def backup_dir() -> str:
     """备份目录：优先 Android 外部私有目录（文件管理器/电脑都能取到）。"""
     candidates = []
     if platform.is_android():
+        java_dir = _java_external_dir()
+        if java_dir:
+            candidates.append(java_dir)
         pkg = _android_package()
         if pkg:
             candidates.append(
@@ -74,6 +90,18 @@ def backup_dir() -> str:
         if _writable(directory):
             return directory
     raise RuntimeError("没有可写的备份目录")
+
+
+def human_backup_dir() -> str:
+    """给用户看的备份目录（Android 上用「手机根目录/…」这种说法）。"""
+    try:
+        directory = backup_dir()
+    except Exception:
+        return "（不可用）"
+    prefix = "/storage/emulated/0/"
+    if directory.startswith(prefix):
+        return "手机根目录/" + directory[len(prefix):]
+    return directory
 
 
 def default_filename() -> str:

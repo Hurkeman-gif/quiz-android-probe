@@ -14,7 +14,6 @@ import traceback
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -557,9 +556,8 @@ class MobileMainWindow(QWidget):
         self.set_panel.closeRequested.connect(self.close_overlays)
         self.backup_panel = BackupPanel(self)
         self.backup_panel.exportRequested.connect(self._on_export_requested)
-        self.backup_panel.exportAsRequested.connect(self._on_export_as_requested)
         self.backup_panel.importRequested.connect(self._on_import_requested)
-        self.backup_panel.pickFileRequested.connect(self._on_pick_backup_file)
+        self.backup_panel.refreshRequested.connect(self._on_refresh_backups)
         self.backup_panel.closeRequested.connect(self.close_overlays)
         app = QApplication.instance()
         if app is not None:
@@ -1319,6 +1317,7 @@ class MobileMainWindow(QWidget):
         self.backup_panel.set_backups(directory, items, message)
 
     def _on_export_requested(self):
+        """导出到固定备份目录（不弹系统文件选择器，避免 Android 上界面假死）。"""
         try:
             info = data_backup.export_default()
         except Exception as exc:
@@ -1328,58 +1327,18 @@ class MobileMainWindow(QWidget):
         counts = info.get("counts") or {}
         self._refresh_backup_panel()
         self.backup_panel.show_result(
-            "已导出 %s（进度 %d · 记录 %d · 错题 %d）" % (
+            "已导出 %s（进度 %d · 记录 %d · 错题 %d）\n"
+            "备份已成功保存至：%s\n"
+            "请使用文件管理器或连接电脑前往该目录拷贝。" % (
                 os.path.basename(info.get("path") or ""),
                 counts.get("progress", 0), counts.get("history", 0),
-                counts.get("wrongbook", 0)), True)
+                counts.get("wrongbook", 0),
+                data_backup.human_backup_dir()), True)
 
-    def _on_export_as_requested(self):
-        """按用户选择的位置导出（系统保存对话框）。"""
-        try:
-            directory = data_backup.backup_dir()
-        except Exception:
-            directory = os.path.expanduser("~")
-        dialog = QFileDialog(self, "导出数据")
-        dialog.setAcceptMode(QFileDialog.AcceptSave)
-        dialog.setFileMode(QFileDialog.AnyFile)
-        dialog.setNameFilter("备份文件 (*.json)")
-        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
-        dialog.selectFile(os.path.join(directory, data_backup.default_filename()))
-        # Android 上 Qt 自绘文件对话框可能收不到触摸，20 秒兜底关闭避免卡死
-        QTimer.singleShot(20000, dialog.reject)
-        if not dialog.exec():
-            return
-        files = dialog.selectedFiles()
-        if not files:
-            return
-        try:
-            info = data_backup.export_to(files[0])
-        except Exception as exc:
-            traceback.print_exc()
-            self.backup_panel.show_result("导出失败：%s" % exc, False)
-            return
-        self._refresh_backup_panel()
-        self.backup_panel.show_result(
-            "已导出 %s" % os.path.basename(info.get("path") or ""), True)
-
-    def _on_pick_backup_file(self):
-        """从任意位置选一个备份 JSON 导入（系统打开对话框）。"""
-        try:
-            directory = data_backup.backup_dir()
-        except Exception:
-            directory = os.path.expanduser("~")
-        dialog = QFileDialog(self, "导入数据")
-        dialog.setAcceptMode(QFileDialog.AcceptOpen)
-        dialog.setFileMode(QFileDialog.ExistingFile)
-        dialog.setNameFilter("备份文件 (*.json)")
-        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
-        dialog.selectFile(directory)
-        QTimer.singleShot(20000, dialog.reject)
-        if not dialog.exec():
-            return
-        files = dialog.selectedFiles()
-        if files:
-            self._on_import_requested(files[0])
+    def _on_refresh_backups(self):
+        """重新扫描备份目录（用户从电脑/文件管理器拷入 json 后点刷新）。"""
+        self._refresh_backup_panel("已刷新：%d 个备份文件" % len(
+            data_backup.list_backups()))
 
     def _on_import_requested(self, path):
         result = data_backup.import_file(path)

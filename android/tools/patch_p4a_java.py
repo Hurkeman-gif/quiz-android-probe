@@ -26,6 +26,23 @@ KEEP_LINE = (
     "android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);"
 )
 
+# 用 Java 侧把「本应用的外部私有目录」准备好并落盘路径给 Python：
+# Android 11+ 分区存储下 Python 直接 mkdir /storage/emulated/0/Android/data/<pkg>
+# 并不可靠，getExternalFilesDir 才是官方入口。
+EXTERNAL_LINE = '''try {
+            java.io.File extDir = getExternalFilesDir(null);
+            if (extDir != null) {
+                java.io.File bkDir = new java.io.File(extDir, "backup");
+                bkDir.mkdirs();
+                java.io.FileWriter w = new java.io.FileWriter(
+                        new java.io.File(getFilesDir(), "external_backup_dir.txt"), false);
+                w.write(bkDir.getAbsolutePath());
+                w.close();
+            }
+        } catch (Exception e) {
+            Log.e("PythonActivity", "backup dir init failed", e);
+        }'''
+
 NEW_BACK = '''    long lastBackClick = SystemClock.elapsedRealtime();
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -131,6 +148,15 @@ def patch(path: pathlib.Path) -> tuple:
         src = src.replace(
             "super.onCreate(savedInstanceState);",
             "super.onCreate(savedInstanceState);\n        " + KEEP_LINE,
+            1,
+        )
+        changed = True
+
+    if "external_backup_dir.txt" not in src:
+        src = src.replace(
+            "super.onCreate(savedInstanceState);\n        " + KEEP_LINE,
+            "super.onCreate(savedInstanceState);\n        " + KEEP_LINE
+            + "\n        " + EXTERNAL_LINE,
             1,
         )
         changed = True
