@@ -26,11 +26,13 @@ from PySide6.QtWidgets import (
 from .. import database, progress_store
 from ..models import TYPE_LABELS
 from ..session import MODE_NORMAL, VIEW_FINISH, VIEW_QUIZ, PracticeSession
+from .confirm_panel import ConfirmPanel
 from .finish_view import FinishView
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
 
 DELAY_CORRECT_MS = 800
+DELAY_WRONG_MS = 2000
 
 MANUAL_SUBMIT_TIP = "未作答题目将按错误计入本次成绩，但不会加入错题本。是否提交？"
 
@@ -151,6 +153,30 @@ QPushButton#manualBtn:disabled {
     color: #9CA3AF;
     background: #F9FAFB;
     border: 1px solid #E5E7EB;
+}
+QPushButton#confirmOk {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 13pt;
+    font-weight: 600;
+    background: #2563EB;
+    color: #FFFFFF;
+    border: none;
+}
+QPushButton#confirmOk:pressed {
+    background: #1D4ED8;
+}
+QPushButton#confirmCancel {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 13pt;
+    font-weight: 600;
+    background: #F3F4F6;
+    color: #374151;
+    border: 1px solid #E5E7EB;
+}
+QPushButton#confirmCancel:pressed {
+    background: #E5E7EB;
 }
 /* 完成页 */
 QWidget#finishView {
@@ -293,6 +319,9 @@ class MobileMainWindow(QWidget):
         self.number_panel = NumberPanel(self)
         self.number_panel.numberChosen.connect(self._on_number_chosen)
         self.number_panel.closeRequested.connect(self.close_number_panel)
+        # 提前交卷确认：用应用内弹层，Android 上 QMessageBox 的按钮点不到
+        self.confirm_panel = ConfirmPanel(self)
+        self.confirm_panel.confirmed.connect(self._on_manual_submit_confirmed)
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self._on_app_state_changed)
@@ -634,15 +663,13 @@ class MobileMainWindow(QWidget):
         """提前交卷：未答题按错误计入成绩，但绝不写错题本。"""
         if not self._manual_submit_allowed():
             return
-        box = QMessageBox(self)
-        box.setWindowTitle("提前交卷")
-        box.setIcon(QMessageBox.Question)
-        box.setText(MANUAL_SUBMIT_TIP)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.setDefaultButton(QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("提交")
-        box.button(QMessageBox.No).setText("取消")
-        if box.exec() != QMessageBox.Yes:
+        self._cancel_auto()
+        self.close_number_panel()
+        self.confirm_panel.setGeometry(self.rect())
+        self.confirm_panel.show_confirm("提前交卷", MANUAL_SUBMIT_TIP, "提交", "取消")
+
+    def _on_manual_submit_confirmed(self):
+        if not self.session or not self._manual_submit_allowed():
             return
         # 只标记强制判错，不调用任何错题本接口
         self.session.mark_unanswered()
@@ -659,13 +686,12 @@ class MobileMainWindow(QWidget):
             return
         if self.session.is_all_answered():
             self._auto_action = "finish"
-        elif correct:
+        else:
             question = self.session.current_question()
             self._auto_qid = question["id"] if question else None
             self._auto_action = "next"
-        else:
-            return
-        self._auto_timer.start(DELAY_CORRECT_MS)
+        # 答对 0.8 秒后自动下一题；答错留 2 秒看正确答案与解析
+        self._auto_timer.start(DELAY_CORRECT_MS if correct else DELAY_WRONG_MS)
 
     def _cancel_auto(self):
         self._auto_timer.stop()
@@ -749,6 +775,7 @@ class MobileMainWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        panel = getattr(self, "number_panel", None)
-        if panel is not None and panel.isVisible():
-            panel.setGeometry(self.rect())
+        for name in ("number_panel", "confirm_panel"):
+            panel = getattr(self, name, None)
+            if panel is not None and panel.isVisible():
+                panel.setGeometry(self.rect())
