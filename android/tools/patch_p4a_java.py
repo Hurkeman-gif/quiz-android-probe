@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""补丁 p4a 的 qt bootstrap PythonActivity.java。
+"""补丁 p4a 的 qt bootstrap PythonActivity.java（常亮 + 返回键转发）。
 
-pythonforandroid 是在 pyside6-android-deploy 运行时才装进环境的，
-所以这个脚本以 --watch 模式在 deploy 之前启动，等它出现后立刻打补丁：
+pythonforandroid 是 pyside6-android-deploy 运行时才克隆/安装的，而且 Java 源码
+会被复制到 build-<arch>/dists/<dist>/src/main/java 下再编译。所以这个脚本以
+--watch 模式启动，反复扫描并按需补丁，直到 dists 下的副本也打上补丁为止：
 
 1) Window 加 FLAG_KEEP_SCREEN_ON —— 答题过程屏幕常亮（不需要额外权限）；
-2) BACK 键写成标记文件 back_key.flag —— p4a 默认实现是「再按一次退出」的
-   Toast 并 return true（把按键吞掉），这里改成交给 Python 侧处理：
-   先关浮层，没有浮层就弹「确认退出练习吗？」。
+2) BACK 键写标记文件 back_key.flag —— p4a 默认实现是「再按一次退出」Toast 并
+   return true（把按键吞掉），这里改成交给 Python 侧处理：先关浮层，没有浮层
+   就弹「确认退出练习吗？」。
 
-补丁是幂等的，重复运行不会叠加。
+补丁是幂等的，重复打不会叠加。
 """
 from __future__ import annotations
 
@@ -64,56 +65,49 @@ def _roots() -> list:
     return [p for p in out if p.exists()]
 
 
-def _site_roots() -> list:
-    """p4a 可能装到的 site-packages 目录（venv / --user / 系统）。"""
+def _platform_dirs() -> list:
+    """buildozer 平台目录：<base>/.buildozer/android/platform 及同级 build-*/。"""
+    bases = [pathlib.Path.cwd(), pathlib.Path.cwd() / "android"]
+    bases.extend(_roots())
+    bases.extend([r / "android" for r in _roots()])
     out = []
+    for base in bases:
+        for platform in (base / ".buildozer" / "android" / "platform",):
+            if platform.is_dir() and platform not in out:
+                out.append(platform)
+    return out
+
+
+def _p4a_dirs() -> list:
+    """pythonforandroid 包目录（buildozer 克隆优先，其次 site-packages）。"""
+    dirs = []
+    for platform in _platform_dirs():
+        cand = platform / "python-for-android" / "pythonforandroid"
+        if cand.is_dir() and cand not in dirs:
+            dirs.append(cand)
     for root in _roots():
         for name in ("lib", "lib64"):
             base = root / name
             if not base.exists():
                 continue
-            out.extend([p for p in base.glob("python3*") if p.is_dir()])
-        # venv 可能直接给出 site-packages 层级
-        sp = root / "site-packages"
-        if sp.exists():
-            out.append(sp)
-    return out
-
-
-def _buildozer_p4a_dirs() -> list:
-    """pyside6-android-deploy / buildozer 会把 p4a 克隆到 .buildozer 平台目录下。"""
-    dirs = []
-    bases = [pathlib.Path.cwd(), pathlib.Path.cwd() / "android"]
-    bases.extend(_roots())
-    bases.extend([r / "android" for r in _roots()])
-    for base in bases:
-        clone = base / ".buildozer" / "android" / "platform" / "python-for-android"
-        cand = clone / "pythonforandroid"
-        if cand.is_dir() and cand not in dirs:
-            dirs.append(cand)
-    return dirs
-
-
-def _p4a_dirs() -> list:
-    dirs = []
-    for cand in _buildozer_p4a_dirs():
-        if cand not in dirs:
-            dirs.append(cand)
-    for base in _site_roots():
-        for cand in (base / "site-packages" / "pythonforandroid", base / "pythonforandroid"):
-            if cand.is_dir() and cand not in dirs:
-                dirs.append(cand)
+            for py in base.glob("python3*"):
+                for cand in (py / "site-packages" / "pythonforandroid", py / "pythonforandroid"):
+                    if cand.is_dir() and cand not in dirs:
+                        dirs.append(cand)
     return dirs
 
 
 def find_java() -> list:
+    """返回 (是否 dists 副本, 路径)；bootstrap 与 dists 副本都要打补丁。"""
     found = []
     for p4a in _p4a_dirs():
         boot = p4a / "bootstraps"
-        if not boot.exists():
-            continue
-        found.extend(boot.glob("**/PythonActivity.java"))
-    found.sort(key=lambda p: 0 if "bootstraps/qt" in p.as_posix() else 1)
+        if boot.exists():
+            found.extend((False, p) for p in boot.glob("**/PythonActivity.java"))
+    for platform in _platform_dirs():
+        for build in platform.glob("build-*/dists/*/src/main/java"):
+            found.extend((True, p) for p in build.glob("**/PythonActivity.java"))
+    found.sort(key=lambda item: (0 if "bootstraps/qt" in item[1].as_posix() else 1))
     return found
 
 
@@ -151,22 +145,25 @@ def main() -> int:
     args = ap.parse_args()
 
     deadline = time.time() + args.timeout
+    done = []
     while True:
-        cands = find_java()
-        if cands:
-            target = cands[0]
-            ok, msg = patch(target)
-            print("PATCH_JAVA target=%s result=%s msg=%s" % (target, ok, msg))
+        for is_dist, path in find_java():
+            ok, msg = patch(path)
+            print("PATCH_JAVA dists=%d target=%s result=%s msg=%s"
+                  % (int(is_dist), path, ok, msg), flush=True)
             if not ok:
                 return 1
-            if args.marker:
-                pathlib.Path(args.marker).write_text(str(target), encoding="utf-8")
-            return 0
+            if is_dist:
+                done.append(path)
+                if args.marker:
+                    pathlib.Path(args.marker).write_text(str(path), encoding="utf-8")
+                return 0
         if not args.watch or time.time() > deadline:
-            print("PATCH_JAVA 未找到 PythonActivity.java")
-            print("  搜索的 site 根：", [str(p) for p in _site_roots()])
-            print("  cwd：", os.getcwd())
-            print("  找到的 pythonforandroid：", [str(p) for p in _p4a_dirs()])
+            print("PATCH_JAVA 未找到可编译的 dists 副本 PythonActivity.java", flush=True)
+            print("  cwd：", os.getcwd(), flush=True)
+            print("  平台目录：", [str(p) for p in _platform_dirs()], flush=True)
+            print("  pythonforandroid：", [str(p) for p in _p4a_dirs()], flush=True)
+            print("  已补丁：", [str(p) for p in done], flush=True)
             return 1
         time.sleep(2)
 
