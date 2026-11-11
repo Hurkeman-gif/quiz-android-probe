@@ -191,89 +191,6 @@ jobs:
           echo "===== 补丁后的关键行 ====="
           grep -n 'set_value("app", "title"\|set_value("app", "version"\|set_value("app", "package' "$SPEC_PY" || true
 
-      - name: 补丁 PythonActivity.java（常亮 + 返回键交给应用处理）
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os, pathlib, re, sys
-
-          # pythonforandroid 可能装在 venv 里，也可能是 --user 装到 ~/.local（本流程就是后者）
-          roots = [
-              pathlib.Path(os.environ["RUNNER_TEMP"]) / "deploy-venv",
-              pathlib.Path.home() / ".local",
-            ]
-          cands = []
-          for root in roots:
-              if not root.exists():
-                  continue
-              cands = [p for p in root.rglob("PythonActivity.java") if "bootstraps/qt" in p.as_posix()]
-              if not cands:
-                  cands = [p for p in root.rglob("PythonActivity.java") if "org/kivy/android" in p.as_posix()]
-              if cands:
-                  break
-          if not cands:
-              print("错误：找不到 PythonActivity.java，以下是搜索到的 pythonforandroid 目录：")
-              for root in roots:
-                  if root.exists():
-                      for p in root.rglob("pythonforandroid"):
-                          print(" ", p)
-                          sys.exit(0)
-              sys.exit(1)
-          print("候选：", [str(p) for p in cands])
-          path = cands[0]
-          print("PATCH_JAVA", path)
-          src = path.read_text(encoding="utf-8")
-
-          # 1) 屏幕常亮：Window 级别 FLAG_KEEP_SCREEN_ON，不需要额外权限，
-          #    也不受 p4a 的 wakelock meta-data 影响。
-          keep = "getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);"
-          if keep not in src:
-              n_keep = src.count("super.onCreate(savedInstanceState);")
-              if n_keep != 1:
-                  print("错误：super.onCreate 命中 %d 次" % n_keep)
-                  sys.exit(1)
-              src = src.replace(
-                  "super.onCreate(savedInstanceState);",
-                  "super.onCreate(savedInstanceState);\n        " + keep,
-                  1)
-          else:
-              print("常亮补丁已存在，跳过")
-
-          # 2) 返回键：p4a 默认是「再按一次退出」的 Toast 逻辑（直接吞掉按键），
-          #    改成把 BACK 转给 Qt 视图，由 Python 侧决定关浮层还是弹确认框。
-          # 用一个标记文件把 BACK 事件传给 Python（轮询读取），
-          # 不依赖 Qt 对 KEYCODE_BACK 的映射，跨 Qt 版本稳定。
-          new_back = (
-              "    long lastBackClick = SystemClock.elapsedRealtime();\n"
-              "    @Override\n"
-              "    public boolean onKeyDown(int keyCode, KeyEvent event) {\n"
-              "        // 返回键转交 Python：写标记文件，Python 侧轮询后决定关浮层 / 二次确认退出\n"
-              "        if (keyCode == KeyEvent.KEYCODE_BACK) {\n"
-              "            try {\n"
-              "                java.io.FileWriter w = new java.io.FileWriter(new java.io.File(getFilesDir(), \"back_key.flag\"), false);\n"
-              "                w.write(String.valueOf(System.currentTimeMillis()));\n"
-              "                w.close();\n"
-              "            } catch (Exception e) {\n"
-              "                Log.e(\"PythonActivity\", \"back flag write failed\", e);\n"
-              "            }\n"
-              "            return true;\n"
-              "        }\n"
-              "        return super.onKeyDown(keyCode, event);\n"
-              "    }\n")
-          src, n_back = re.subn(
-              r"    long lastBackClick = SystemClock\.elapsedRealtime\(\);\s*"
-              r"@Override\s*public boolean onKeyDown\(int keyCode, KeyEvent event\)\s*\{.*?\n    \}\n",
-              lambda m: new_back,
-              src,
-              flags=re.S)
-          print("PATCH_JAVA keep=%d back=%d" % (1 if keep in src else 0, n_back))
-          if n_back != 1:
-              print("错误：onKeyDown 补丁未命中")
-              sys.exit(1)
-          path.write_text(src, encoding="utf-8")
-          PY
-          grep -n "FLAG_KEEP_SCREEN_ON\|KEYCODE_BACK" "$(find "$RUNNER_TEMP/deploy-venv" -name PythonActivity.java -path '*bootstraps/qt*' | head -1)"
-
       - name: 校验题库资产（android/assets/quiz.db）
         run: |
           set -euo pipefail
@@ -293,7 +210,18 @@ jobs:
           # 让 buildozer 认得出「已在虚拟环境里」，否则它给 p4a 装依赖时加 --user，
           # 与 venv 里的 wheel 版本冲突会直接报错退出（Will not install to the user site ...）
           export VIRTUAL_ENV="$RUNNER_TEMP/deploy-venv"
+          # pythonforandroid 要等 deploy 开始后才会被装进环境，所以边构建边等它出现，
+          # 出现后立刻补丁 qt bootstrap 的 PythonActivity.java（常亮 + 返回键转发）。
+          python3 "$GITHUB_WORKSPACE/android/tools/patch_p4a_java.py" \
+              --watch --timeout 1800 --marker "$RUNNER_TEMP/p4a_patch_done" &
+          P4A_PATCHER=$!
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name AnswerTraining             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          wait "$P4A_PATCHER" || true
+          if [ ! -f "$RUNNER_TEMP/p4a_patch_done" ]; then
+              echo "错误：p4a 的 PythonActivity.java 补丁没有生效（常亮 / 返回键会失效）"
+              exit 1
+          fi
+          echo "p4a Java 补丁生效：$(cat "$RUNNER_TEMP/p4a_patch_done")"
 
       - name: 用正式密钥重新签名（release 包）
         env:
