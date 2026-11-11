@@ -49,17 +49,21 @@ APP_DISPLAY_NAME = "答题练习软件"
 
 
 def keep_screen_on():
-    """Android：答题过程中保持屏幕常亮，避免自动息屏打断练习。
-
-    非 Android 平台（或 jnius 不可用）时静默跳过。
-    """
+    """Android：答题过程中保持屏幕常亮，避免自动息屏打断练习。"""
     try:
-        from jnius import autoclass
+        from app.android_back import keep_screen_on as _keep_screen_on
 
-        activity = autoclass("org.kivy.android.PythonActivity").mActivity
-        # WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON == 0x00000080
-        # 直接用常量，避免 jnius 解析内部类名失败。
-        activity.getWindow().addFlags(0x00000080)
+        _keep_screen_on()
+    except Exception:
+        pass
+
+
+def install_back_handler(window):
+    """Android 13+：接管系统返回键。"""
+    try:
+        from app.android_back import install_back_handler as _install
+
+        _install(getattr(window, "_handle_back_key", None))
     except Exception:
         pass
 
@@ -80,6 +84,7 @@ def main():
     window.show()
     # 窗口真正可见后再设一次常亮，避免提前设置被后续 Window 初始化覆盖。
     QTimer.singleShot(0, keep_screen_on)
+    install_back_handler(window)
     return app.exec()
 
 

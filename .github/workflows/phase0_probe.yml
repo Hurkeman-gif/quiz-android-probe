@@ -179,8 +179,23 @@ jobs:
               r'self\.set_value\("app", "package\.domain",\s*f"org\.\{pysidedeploy_config\.title\}"\)',
               'self.set_value("app", "package.domain", "com.answertraining")',
               src)
-          print("PATCH title=%d name=%d domain=%d" % (n_title, n_name, n_domain))
-          if n_title != 1 or n_name != 1 or n_domain != 1:
+          # pyjnius 用来做两件事：屏幕常亮（FLAG_KEEP_SCREEN_ON）与
+          # Android 13+ 返回键接管（OnBackInvokedCallback）。官方 requirements 里没有它。
+          src, n_req = re.subn(
+              r'self\.set_value\("app", "requirements", "python3,shiboken6,PySide6"\)',
+              'self.set_value("app", "requirements", "python3,shiboken6,PySide6,pyjnius")',
+              src)
+          # targetSdk 提到 34：Android 13+ 的预测性返回默认启用，才能注册并收到
+          # OnBackInvokedCallback（targetSdk < 33 时该回调不会被调用）。
+          src, n_api = re.subn(
+              r'self\.set_value\("app", "android\.archs", pysidedeploy_config\.arch\)',
+              'self.set_value("app", "android.archs", pysidedeploy_config.arch)\n'
+              '        self.set_value("app", "android.api", "34")\n'
+              '        self.set_value("app", "android.minapi", "24")',
+              src)
+          print("PATCH title=%d name=%d domain=%d req=%d api=%d" % (
+              n_title, n_name, n_domain, n_req, n_api))
+          if n_title != 1 or n_name != 1 or n_domain != 1 or n_req != 1 or n_api != 1:
               print("错误：buildozer.py 补丁未全部命中，dump 相关行：")
               for i, line in enumerate(src.splitlines(), 1):
                   if "set_value" in line:
