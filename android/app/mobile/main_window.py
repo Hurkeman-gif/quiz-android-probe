@@ -11,7 +11,7 @@
 import os
 import traceback
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -512,6 +512,8 @@ class MobileMainWindow(QWidget):
         self._auto_qid = None
         self._auto_action = None
         self._build_ui()
+        # 应用级事件过滤器：兜住 Android 返回键（keyPressEvent 未必收得到）。
+        QApplication.instance().installEventFilter(self)
         self.number_panel = NumberPanel(self)
         self.number_panel.numberChosen.connect(self._on_number_chosen)
         self.number_panel.closeRequested.connect(self.close_number_panel)
@@ -802,6 +804,13 @@ class MobileMainWindow(QWidget):
         super().closeEvent(event)
 
     # ------------------------------------------------------------ 返回键
+    def eventFilter(self, obj, event):
+        """应用级兜底：Android 返回键可能直接投递给平台窗口，不一定走 keyPressEvent。"""
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Back, Qt.Key_Escape):
+            if self._handle_back_key():
+                return True
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
         """Android 物理返回键 / 手势返回：先关弹层，答题页再二次确认退出。"""
         if event.key() in (Qt.Key_Back, Qt.Key_Escape):

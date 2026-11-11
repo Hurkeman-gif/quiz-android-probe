@@ -11,7 +11,7 @@
 import sys
 import traceback
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -57,8 +57,9 @@ def keep_screen_on():
         from jnius import autoclass
 
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
-        layout_params = autoclass("android.view.WindowManager$LayoutParams")
-        activity.getWindow().addFlags(layout_params.FLAG_KEEP_SCREEN_ON)
+        # WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON == 0x00000080
+        # 直接用常量，避免 jnius 解析内部类名失败。
+        activity.getWindow().addFlags(0x00000080)
     except Exception:
         pass
 
@@ -77,6 +78,8 @@ def main():
     except Exception:
         window = ErrorWindow("启动失败", traceback.format_exc())
     window.show()
+    # 窗口真正可见后再设一次常亮，避免提前设置被后续 Window 初始化覆盖。
+    QTimer.singleShot(0, keep_screen_on)
     return app.exec()
 
 
