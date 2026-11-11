@@ -22,13 +22,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import database, progress_store
+from .. import database, progress_store, wrongbook
 from ..models import TYPE_LABELS
-from ..session import MODE_NORMAL, VIEW_FINISH, VIEW_QUIZ, PracticeSession
+from ..session import (
+    MODE_NORMAL,
+    MODE_WRONGBOOK,
+    VIEW_FINISH,
+    VIEW_QUIZ,
+    PracticeSession,
+)
 from .confirm_panel import ConfirmPanel
 from .finish_view import FinishView
+from .history_panel import HistoryDetailPanel, HistoryPanel
+from .more_panel import MorePanel
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
+from .wrongbook_panel import WrongbookPanel
 
 DELAY_CORRECT_MS = 800
 DELAY_WRONG_MS = 2000
@@ -301,6 +310,91 @@ QLabel#explainTitle {
     font-size: 11pt;
     font-weight: 700;
 }
+/* 应用内弹层：错题本 / 答题记录 */
+#panelTitle {
+    font-size: 14pt;
+    font-weight: 700;
+    color: #111827;
+}
+#panelSub {
+    font-size: 10.5pt;
+    color: #6B7280;
+}
+#panelEmpty {
+    font-size: 11.5pt;
+    color: #6B7280;
+}
+QPushButton#panelClose {
+    min-height: 36px;
+    border-radius: 8px;
+    padding: 0 12px;
+    font-size: 11.5pt;
+    background: #F3F4F6;
+    color: #374151;
+    border: 1px solid #E5E7EB;
+}
+QPushButton#panelPrimary {
+    min-height: 46px;
+    border-radius: 10px;
+    font-size: 13pt;
+    font-weight: 700;
+    background: #2563EB;
+    color: #FFFFFF;
+    border: none;
+}
+QPushButton#panelPrimary:pressed {
+    background: #1D4ED8;
+}
+QPushButton#panelPrimary:disabled {
+    background: #BFDBFE;
+    color: #EFF6FF;
+}
+QPushButton#panelGhost {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 12.5pt;
+    background: #F3F4F6;
+    color: #374151;
+    border: 1px solid #E5E7EB;
+}
+QPushButton#panelGhost:pressed {
+    background: #E5E7EB;
+}
+QPushButton#panelGhost:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+}
+QPushButton#panelDanger {
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 12.5pt;
+    font-weight: 600;
+    background: #FEF2F2;
+    color: #B91C1C;
+    border: 1px solid #FECACA;
+}
+QPushButton#panelDanger:pressed {
+    background: #FEE2E2;
+}
+QPushButton#panelDanger:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+}
+QListWidget#recordList {
+    background: transparent;
+    border: none;
+    font-size: 11.5pt;
+    color: #1F2937;
+}
+QListWidget#recordList::item {
+    padding: 9px 4px;
+    border-bottom: 1px solid #E5E7EB;
+}
+QListWidget#recordList::item:selected {
+    background: #E8F1FF;
+    color: #1D4ED8;
+}
 """
 
 
@@ -330,9 +424,29 @@ class MobileMainWindow(QWidget):
         self.number_panel = NumberPanel(self)
         self.number_panel.numberChosen.connect(self._on_number_chosen)
         self.number_panel.closeRequested.connect(self.close_number_panel)
-        # 提前交卷确认：用应用内弹层，Android 上 QMessageBox 的按钮点不到
+        # 提前交卷 / 移除 / 删除 / 清空 共用同一个确认弹层，按 _confirm_action 分发
+        self._confirm_action = None
         self.confirm_panel = ConfirmPanel(self)
-        self.confirm_panel.confirmed.connect(self._on_manual_submit_confirmed)
+        self.confirm_panel.confirmed.connect(self._on_confirm_confirmed)
+        # 错题本 / 答题记录：同样是同窗口弹层（Android 上独立窗口收不到触摸）
+        self.more_panel = MorePanel(self)
+        self.more_panel.wrongbookRequested.connect(self.open_wrongbook_panel)
+        self.more_panel.historyRequested.connect(self.open_history_panel)
+        self.more_panel.closeRequested.connect(self.close_overlays)
+        self.wrongbook_panel = WrongbookPanel(self)
+        self.wrongbook_panel.startPractice.connect(self._start_wrongbook_practice)
+        self.wrongbook_panel.removeRequested.connect(
+            self._on_wrongbook_remove_requested)
+        self.wrongbook_panel.clearRequested.connect(
+            self._on_wrongbook_clear_requested)
+        self.wrongbook_panel.closeRequested.connect(self.close_overlays)
+        self.history_panel = HistoryPanel(self)
+        self.history_panel.detailRequested.connect(self._on_history_detail_requested)
+        self.history_panel.deleteRequested.connect(self._on_history_delete_requested)
+        self.history_panel.clearRequested.connect(self._on_history_clear_requested)
+        self.history_panel.closeRequested.connect(self.close_overlays)
+        self.history_detail_panel = HistoryDetailPanel(self)
+        self.history_detail_panel.closeRequested.connect(self.close_history_detail)
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self._on_app_state_changed)
@@ -371,6 +485,13 @@ class MobileMainWindow(QWidget):
         self.nav_button.setMinimumHeight(34)
         self.nav_button.clicked.connect(self.open_number_panel)
         row.addWidget(self.nav_button, 0)
+        self.more_button = QPushButton("更多")
+        self.more_button.setObjectName("navToggleBtn")
+        self.more_button.setFocusPolicy(Qt.NoFocus)
+        self.more_button.setCursor(Qt.PointingHandCursor)
+        self.more_button.setMinimumHeight(34)
+        self.more_button.clicked.connect(self.open_more_panel)
+        row.addWidget(self.more_button, 0)
         hv.addLayout(row)
 
         # 第二行：题号/总数 + 正确率
@@ -487,6 +608,7 @@ class MobileMainWindow(QWidget):
             return
         self._cancel_auto()
         self._save_progress_now()
+        self.close_overlays()
         self.current_type = qtype
         self._start_normal_session(qtype)
 
@@ -583,6 +705,7 @@ class MobileMainWindow(QWidget):
         self.stack.setCurrentWidget(self.finish_view)
         self.bottom_bar.setVisible(False)
         self._save_progress_now()
+        self._record_history_once()
         self._refresh_chrome()
 
     def _on_restart_requested(self):
@@ -590,10 +713,11 @@ class MobileMainWindow(QWidget):
         if not self.session:
             return
         self.session.restart_current_session()
-        try:
-            progress_store.delete_progress(*self._session_key)
-        except Exception:
-            traceback.print_exc()
+        if self.session.mode == MODE_NORMAL:
+            try:
+                progress_store.delete_progress(*self._session_key)
+            except Exception:
+                traceback.print_exc()
         self._ensure_quiz_view()
         self.quiz_view.set_session(self.session)
         self._refresh_chrome()
@@ -616,10 +740,11 @@ class MobileMainWindow(QWidget):
         total = self.session.count()
         index = self.session.current_index
         all_answered = self.session.is_all_answered()
+        prefix = "错题本练习 · " if self.session.mode == MODE_WRONGBOOK else ""
         if all_answered or self.session.view_mode == VIEW_FINISH:
-            self.index_label.setText(f"练习完成 · 共 {total} 题")
+            self.index_label.setText(f"{prefix}练习完成 · 共 {total} 题")
         else:
-            self.index_label.setText(f"第 {index + 1} 题 / 共 {total} 题")
+            self.index_label.setText(f"{prefix}第 {index + 1} 题 / 共 {total} 题")
         self.rate_label.setText(f"正确率 {stats['accuracy_text']}")
         self.stats_label.setText(
             f"已答 {stats['answered_count']} · 答对 {stats['correct_count']} · "
@@ -630,9 +755,11 @@ class MobileMainWindow(QWidget):
         self._force_repaint()
 
     def _update_type_buttons(self):
-        """题型按钮高亮当前题型。"""
+        """题型按钮高亮当前题型（错题本练习为混合题型，不高亮）。"""
+        wrongbook_mode = bool(self.session and self.session.mode == MODE_WRONGBOOK)
         for qtype, btn in self.type_buttons.items():
-            btn.setProperty("active", "true" if qtype == self.current_type else "false")
+            active = (not wrongbook_mode) and qtype == self.current_type
+            btn.setProperty("active", "true" if active else "false")
             style = btn.style()
             style.unpolish(btn)
             style.polish(btn)
@@ -685,6 +812,7 @@ class MobileMainWindow(QWidget):
         self._cancel_auto()
         self.close_number_panel()
         self.confirm_panel.setGeometry(self.rect())
+        self._confirm_action = "manual_submit"
         self.confirm_panel.show_confirm("提前交卷", MANUAL_SUBMIT_TIP, "提交", "取消")
 
     def _on_manual_submit_confirmed(self):
@@ -699,6 +827,7 @@ class MobileMainWindow(QWidget):
     # ------------------------------------------------------------ 判定回调
     def _on_answered(self, correct):
         self._cancel_auto()
+        self._update_wrongbook(correct)
         self._save_progress_now()
         self._refresh_chrome()
         if not self.session:
@@ -794,7 +923,216 @@ class MobileMainWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        for name in ("number_panel", "confirm_panel"):
+        for name in ("number_panel", "confirm_panel", "more_panel",
+                     "wrongbook_panel", "history_panel", "history_detail_panel"):
             panel = getattr(self, name, None)
             if panel is not None and panel.isVisible():
                 panel.setGeometry(self.rect())
+
+    # ------------------------------------------------------------ 弹层通用
+    def _show_overlay(self, panel):
+        panel.setGeometry(self.rect())
+        panel.raise_()
+        panel.show()
+
+    def close_overlays(self):
+        for panel in (self.more_panel, self.wrongbook_panel, self.history_panel,
+                      self.history_detail_panel):
+            panel.hide()
+
+    def open_more_panel(self):
+        self.close_overlays()
+        self._show_overlay(self.more_panel)
+
+    # ------------------------------------------------------------ 错题本
+    def _wrongbook_rows(self):
+        """错题本记录 + 题库只读查询题干（题库里已不存在的题标记失效）。"""
+        try:
+            records = wrongbook.list_records()
+        except Exception:
+            traceback.print_exc()
+            return []
+        rows = []
+        for rec in records:
+            qid = int(rec.get("question_id") or 0)
+            question = None
+            if qid:
+                try:
+                    question = database.get_question(qid)
+                except Exception:
+                    traceback.print_exc()
+            question = question or {}
+            rows.append({
+                "question_id": qid,
+                "stem": question.get("stem") or "",
+                "type": question.get("type") or "",
+                "wrong_count": int(rec.get("wrong_count") or 0),
+                "missing": not question,
+            })
+        return rows
+
+    def open_wrongbook_panel(self):
+        self._cancel_auto()
+        self.close_overlays()
+        self.wrongbook_panel.set_rows(self._wrongbook_rows())
+        self._show_overlay(self.wrongbook_panel)
+
+    def _update_wrongbook(self, correct):
+        """答错自动收录；错题本练习答对自动移除（手动提交的未答不会走到这里）。"""
+        if not self.session:
+            return
+        question = self.session.current_question()
+        if not question:
+            return
+        qid = int(question["id"])
+        try:
+            if correct:
+                if self.session.mode == MODE_WRONGBOOK:
+                    wrongbook.remove_wrong(qid)
+            else:
+                answer = self.session.answers.get(qid) or {}
+                wrongbook.record_wrong(
+                    qid, answer.get("selected") or [],
+                    question.get("answer") or [], source=self.session.mode)
+        except Exception as exc:
+            traceback.print_exc()
+            self.stats_label.setText(f"错题本更新失败：{exc}")
+
+    def _start_wrongbook_practice(self, ids):
+        """错题本练习：按快照出题，跳过题库中已不存在的题。"""
+        ids = [int(i) for i in (ids or [])]
+        if not ids:
+            return
+        self.close_overlays()
+        self._cancel_auto()
+        self._save_progress_now()
+        questions = []
+        for qid in ids:
+            question = None
+            try:
+                question = database.get_question(qid)
+            except Exception:
+                traceback.print_exc()
+            if question:
+                questions.append(question)
+        if not questions:
+            self.wrongbook_panel.set_rows(self._wrongbook_rows())
+            self._show_overlay(self.wrongbook_panel)
+            return
+        self.session = PracticeSession(MODE_WRONGBOOK, questions,
+                                      wrongbook_snapshot=ids)
+        self._ensure_quiz_view()
+        self.quiz_view.set_session(self.session)
+        self._refresh_chrome()
+
+    def _on_wrongbook_remove_requested(self, question_id):
+        self._confirm_action = ("wrongbook_remove", int(question_id))
+        self.confirm_panel.show_confirm(
+            "移除错题", "从错题本中移除这道题？题库不受影响。", "移除", "取消")
+
+    def _do_wrongbook_remove(self, question_id):
+        try:
+            wrongbook.remove_wrong(question_id)
+        except Exception as exc:
+            traceback.print_exc()
+            self.stats_label.setText(f"错题本更新失败：{exc}")
+        self.wrongbook_panel.set_rows(self._wrongbook_rows())
+        self._show_overlay(self.wrongbook_panel)
+
+    def _on_wrongbook_clear_requested(self):
+        self._confirm_action = ("wrongbook_clear",)
+        self.confirm_panel.show_confirm(
+            "清空错题本", "将清空全部错题记录？此操作不影响题库。", "清空", "取消")
+
+    def _do_wrongbook_clear(self):
+        try:
+            wrongbook.clear_all()
+        except Exception as exc:
+            traceback.print_exc()
+            self.stats_label.setText(f"错题本清空失败：{exc}")
+        self.wrongbook_panel.set_rows(self._wrongbook_rows())
+        self._show_overlay(self.wrongbook_panel)
+
+    # ------------------------------------------------------------ 答题记录
+    def open_history_panel(self):
+        self._cancel_auto()
+        self.close_overlays()
+        try:
+            rows = progress_store.list_history()
+        except Exception:
+            traceback.print_exc()
+            rows = []
+        self.history_panel.set_rows(rows)
+        self._show_overlay(self.history_panel)
+
+    def _on_history_detail_requested(self, record):
+        self.history_detail_panel.set_record(record)
+        self._show_overlay(self.history_detail_panel)
+
+    def close_history_detail(self):
+        self.history_detail_panel.hide()
+
+    def _on_history_delete_requested(self, history_id):
+        self._confirm_action = ("history_delete", int(history_id))
+        self.confirm_panel.show_confirm(
+            "删除记录", "删除这条答题记录？不影响题库、错题本与当前进度。",
+            "删除", "取消")
+
+    def _do_history_delete(self, history_id):
+        try:
+            progress_store.delete_history(history_id)
+        except Exception:
+            traceback.print_exc()
+        self.open_history_panel()
+
+    def _on_history_clear_requested(self):
+        self._confirm_action = ("history_clear",)
+        self.confirm_panel.show_confirm(
+            "清空记录", "将清空全部答题记录？不影响题库、错题本与当前进度。",
+            "清空", "取消")
+
+    def _do_history_clear(self):
+        try:
+            progress_store.clear_history()
+        except Exception:
+            traceback.print_exc()
+        self.open_history_panel()
+
+    def _record_history_once(self):
+        """完成页首次出现时写一条历史（session_uuid 唯一，绝不重复）。"""
+        if not self.session or self.session.history_recorded:
+            return
+        if not self.session.is_all_answered():
+            return
+        if self.session.mode == MODE_WRONGBOOK:
+            question_type = ""
+        else:
+            question_type = self.current_type or ""
+        try:
+            record = self.session.build_history_record(
+                self._bank_key, question_type, source=self.session.mode)
+            progress_store.record_history(record)
+            self.session.history_recorded = True
+        except Exception:
+            traceback.print_exc()
+
+    # ------------------------------------------------------------ 确认分发
+    def _on_confirm_confirmed(self):
+        action = self._confirm_action
+        self._confirm_action = None
+        if not action:
+            return
+        if action == "manual_submit":
+            self._on_manual_submit_confirmed()
+            return
+        if not isinstance(action, tuple):
+            return
+        kind = action[0]
+        if kind == "wrongbook_remove":
+            self._do_wrongbook_remove(action[1])
+        elif kind == "wrongbook_clear":
+            self._do_wrongbook_clear()
+        elif kind == "history_delete":
+            self._do_history_delete(action[1])
+        elif kind == "history_clear":
+            self._do_history_clear()

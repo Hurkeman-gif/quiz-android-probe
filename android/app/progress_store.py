@@ -176,6 +176,88 @@ def record_history(record):
         conn.close()
 
 
+def _row_to_dict(row) -> dict:
+    try:
+        details = json.loads(row["details_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        details = []
+    return {
+        "id": int(row["id"]),
+        "session_uuid": row["session_uuid"],
+        "created_at": row["created_at"],
+        "bank_key": row["bank_key"] or "",
+        "mode": row["mode"],
+        "question_type": row["question_type"] or "",
+        "total_count": int(row["total_count"] or 0),
+        "answered_count": int(row["answered_count"] or 0),
+        "correct_count": int(row["correct_count"] or 0),
+        "wrong_count": int(row["wrong_count"] or 0),
+        "unanswered_count": int(row["unanswered_count"] or 0),
+        "score_rate": float(row["score_rate"] or 0.0),
+        "details": details,
+        "source": row["source"] or "",
+    }
+
+
+def list_history(mode=None, question_type=None):
+    """历史列表（时间倒序）。进度文件不存在返回空列表。"""
+    path = get_progress_path()
+    if not os.path.exists(path):
+        return []
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = "SELECT * FROM history"
+        conds, args = [], []
+        if mode:
+            conds.append("mode=?")
+            args.append(mode)
+        if question_type:
+            conds.append("question_type=?")
+            args.append(question_type)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY id DESC"
+        rows = conn.execute(sql, tuple(args)).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_history(history_id):
+    path = get_progress_path()
+    if not os.path.exists(path):
+        return None
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM history WHERE id=?", (int(history_id),)).fetchone()
+    finally:
+        conn.close()
+    return _row_to_dict(row) if row else None
+
+
+def delete_history(history_id):
+    """删除单条历史（只影响 history 表）。"""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM history WHERE id=?", (int(history_id),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_history():
+    """清空全部历史（调用前必须二次确认；只影响 history 表）。"""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM history")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def count_history():
     path = get_progress_path()
     if not os.path.exists(path):
