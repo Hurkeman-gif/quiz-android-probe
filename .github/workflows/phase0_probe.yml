@@ -190,8 +190,7 @@ jobs:
           src, n_api = re.subn(
               r'self\.set_value\("app", "android\.archs", pysidedeploy_config\.arch\)',
               'self.set_value("app", "android.archs", pysidedeploy_config.arch)\n'
-              '        self.set_value("app", "android.api", "34")\n'
-              '        self.set_value("app", "android.minapi", "24")',
+              '        self.set_value("app", "android.api", "34")',
               src)
           print("PATCH title=%d name=%d domain=%d req=%d api=%d" % (
               n_title, n_name, n_domain, n_req, n_api))
