@@ -98,15 +98,24 @@ def _p4a_dirs() -> list:
 
 
 def find_java() -> list:
-    """返回 (是否 dists 副本, 路径)；bootstrap 与 dists 副本都要打补丁。"""
+    """返回 (是否会被编译, 路径)。
+
+    p4a 的编译链路是：
+      pythonforandroid/bootstraps/qt/build
+        -> build-<arch>/build/bootstrap_builds/qt        (第一次复制)
+        -> build-<arch>/dists/<dist>                     (第二次复制，gradle 在这里编译)
+    所以三处都要打补丁，只有前两处（bootstrap / dists）算「可编译副本」。
+    """
     found = []
     for p4a in _p4a_dirs():
         boot = p4a / "bootstraps"
         if boot.exists():
             found.extend((False, p) for p in boot.glob("**/PythonActivity.java"))
     for platform in _platform_dirs():
-        for build in platform.glob("build-*/dists/*/src/main/java"):
-            found.extend((True, p) for p in build.glob("**/PythonActivity.java"))
+        for build in platform.glob("build-*/build/bootstrap_builds/**"):
+            found.extend((True, p) for p in build.glob("**/PythonActivity.java") if p.is_file())
+        for dist in platform.glob("build-*/dists/*/src/main/java"):
+            found.extend((True, p) for p in dist.glob("**/PythonActivity.java"))
     found.sort(key=lambda item: (0 if "bootstraps/qt" in item[1].as_posix() else 1))
     return found
 
@@ -142,22 +151,37 @@ def main() -> int:
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--marker", default="")
+    ap.add_argument("--grace", type=int, default=180, help="补到 bootstrap 后再守多少秒等 dists 副本")
     args = ap.parse_args()
 
     deadline = time.time() + args.timeout
+    grace_until = float("inf")
     done = []
+    seen = set()
     while True:
         for is_dist, path in find_java():
             ok, msg = patch(path)
-            print("PATCH_JAVA dists=%d target=%s result=%s msg=%s"
-                  % (int(is_dist), path, ok, msg), flush=True)
+            key = (str(path), ok, msg)
+            if key not in seen:
+                seen.add(key)
+                print("PATCH_JAVA dists=%d target=%s result=%s msg=%s"
+                      % (int(is_dist), path, ok, msg), flush=True)
             if not ok:
-                return 1
-            if is_dist:
+                # 非 qt bootstrap（如 service_only）没有这段 onKeyDown，跳过即可，
+                # 只有真正会被编译的那份才必须打上补丁。
+                continue
+            if is_dist and path not in done:
                 done.append(path)
                 if args.marker:
                     pathlib.Path(args.marker).write_text(str(path), encoding="utf-8")
-                return 0
+                print("PATCH_JAVA 可编译副本已补丁：%s" % path, flush=True)
+                if "/dists/" in path.as_posix():
+                    print("PATCH_JAVA dists 副本已补丁，结束等待", flush=True)
+                    return 0
+                # 先补到 bootstrap_builds：再守一会儿，等 dists 副本出现也补上
+                grace_until = time.time() + args.grace
+        if done and time.time() > grace_until:
+            return 0
         if not args.watch or time.time() > deadline:
             print("PATCH_JAVA 未找到可编译的 dists 副本 PythonActivity.java", flush=True)
             print("  cwd：", os.getcwd(), flush=True)
