@@ -619,6 +619,9 @@ class MobileMainWindow(QWidget):
 
         self.bottom_bar = QWidget()
         self.bottom_bar.setObjectName("bottomBar")
+        # QWidget 默认不画 QSS 背景：不设这个属性时底栏是透明的，Android 会把
+        # 上一版布局的像素留在屏幕上，造成「看到的位置点不到」。
+        self.bottom_bar.setAttribute(Qt.WA_StyledBackground, True)
         bv = QVBoxLayout(self.bottom_bar)
         # 底部多留 44px：Android 手势条/导航栏会吞掉贴底的点击
         bv.setContentsMargins(12, 8, 12, 44)
@@ -857,8 +860,14 @@ class MobileMainWindow(QWidget):
             style.unpolish(btn)
             style.polish(btn)
 
+    def _repaint_bottom(self):
+        """底栏在按钮显隐后必须整块重绘，否则 Android 会残留上一版像素。"""
+        self.bottom_bar.update()
+        self.bottom_bar.repaint()
+
     def _force_repaint(self):
         """Android 上局部重绘会让数字缺笔画，这里整窗重绘一次。"""
+        self._repaint_bottom()
         self.update()
         self.repaint()
         QTimer.singleShot(0, self._repaint_window)
@@ -885,6 +894,7 @@ class MobileMainWindow(QWidget):
         self.result_button.setEnabled(done)
         self.prev_button.setEnabled(has_session and not all_answered and index > 0)
         self.next_button.setEnabled(has_session and not all_answered)
+        self._repaint_bottom()
 
     # ------------------------------------------------------------ 手动提交
     def _manual_submit_allowed(self):
