@@ -1,8 +1,9 @@
 [app]
-title = Phase0Probe
+title = 答题练习软件
 project_dir = .
 input_file = main.py
 exec_directory = .
+icon = assets/icon.png
 
 [qt]
 modules = Core,Gui,Widgets,Sql

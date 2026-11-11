@@ -149,6 +149,37 @@ jobs:
           sed -i 's|include_exts = f"{include_exts},qml,js"|include_exts = f"{include_exts},qml,js,db"|' "$SPEC_PY"
           grep -n 'qml,js' "$SPEC_PY"
 
+      - name: 改为正式包名、应用名与版本（构建期补丁 buildozer.py）
+        run: |
+          set -euo pipefail
+          # pyside6-android-deploy 会把包名写成 org.<name>.<name>，应用名也直接用 name。
+          # 这里直接改它生成 buildozer.spec 的那几行，落成正式包名 / 中文名称 / 1.0.0 版本。
+          SPEC_PY=$(ls "$RUNNER_TEMP"/deploy-venv/lib/python*/site-packages/PySide6/scripts/deploy_lib/android/buildozer.py | head -n 1)
+          echo "SPEC_PY=$SPEC_PY"
+          SPEC_PY="$SPEC_PY" python3 - <<'PY'
+          import os, re, pathlib
+
+          path = pathlib.Path(os.environ["SPEC_PY"])
+          lines = path.read_text(encoding="utf-8").splitlines(True)
+          plan = [
+              ('"package", "domain"', 'self.set_value("package", "domain", "com.answertraining")', "domain"),
+              ('"package", "name"', 'self.set_value("package", "name", "quiz")', "name"),
+              ('"app", "title"', 'self.set_value("app", "title", "答题练习软件")', "title"),
+              ('"app", "version"', 'self.set_value("app", "version", "1.0.0")', "version"),
+          ]
+          for needle, replacement, label in plan:
+              hits = 0
+              for i, line in enumerate(lines):
+                  if "set_value" in line and needle in line:
+                      print("BEFORE[%s]: %s" % (label, line.strip()))
+                      lines[i] = re.match(r"\s*", line).group(0) + replacement + "\n"
+                      hits += 1
+              print("PATCH[%s] hits=%d" % (label, hits))
+          path.write_text("".join(lines), encoding="utf-8")
+          PY
+          echo "===== 补丁后的关键行 ====="
+          grep -n 'set_value("package"\|set_value("app", "title"\|set_value("app", "version"' "$SPEC_PY" || true
+
       - name: 校验题库资产（android/assets/quiz.db）
         run: |
           set -euo pipefail
@@ -168,21 +199,56 @@ jobs:
           # 让 buildozer 认得出「已在虚拟环境里」，否则它给 p4a 装依赖时加 --user，
           # 与 venv 里的 wheel 版本冲突会直接报错退出（Will not install to the user site ...）
           export VIRTUAL_ENV="$RUNNER_TEMP/deploy-venv"
-          "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name Phase0Probe             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name AnswerTraining             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
-      - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名）
+      - name: 用正式密钥重新签名（release 包）
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
         run: |
           set -euo pipefail
-          APK=$(find "$GITHUB_WORKSPACE" -name '*.apk' -type f | head -n 1)
+          DEBUG_APK=$(find "$GITHUB_WORKSPACE" -name '*.apk' -type f | head -n 1)
+          echo "DEBUG_APK=$DEBUG_APK"
+          test -n "$DEBUG_APK"
+          test -n "$KEYSTORE_B64"
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          ls -l "$RUNNER_TEMP/release.p12"
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$APKSIGNER"
+          OUT="$GITHUB_WORKSPACE/QuizApp-v1.0.0-release.apk"
+          ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          "$ZIPALIGN" -f -p 4 "$DEBUG_APK" "$RUNNER_TEMP/aligned.apk"
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/release.p12" \
+            --ks-type PKCS12 \
+            --ks-key-alias "$KEYSTORE_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEYSTORE_PASSWORD" \
+            --min-sdk-version 23 \
+            --out "$OUT" \
+            "$RUNNER_TEMP/aligned.apk"
+          echo "===== 签名证书 ====="
+          "$APKSIGNER" verify --print-certs "$OUT"
+          ls -l "$OUT"
+          echo "SIGNED_APK=$OUT" >> "$GITHUB_ENV"
+
+      - name: 校验 APK（存在性 / 体积 / Qt 库 / 包名 / 应用名）
+        run: |
+          set -euo pipefail
+          APK="$SIGNED_APK"
           echo "APK=$APK"
-          test -n "$APK"
+          test -f "$APK"
           ls -l "$APK"
           SIZE_MB=$(du -m "$APK" | cut -f1)
           echo "APK_SIZE_MB=$SIZE_MB"
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
           echo "===== 题库资产打包检查 ====="
           python3 -c "import io,sys,tarfile,zipfile;z=zipfile.ZipFile(sys.argv[1]);d=z.read('assets/private.tar');t=tarfile.open(fileobj=io.BytesIO(d));ns=t.getnames();hit=[n for n in ns if n.endswith('assets/quiz.db')];print('private.tar 内 quiz.db:',hit);sys.exit(0 if hit else 1)" "$APK" || { echo "错误：assets/private.tar 内未找到 quiz.db"; unzip -l "$APK" | head -40; exit 1; }
-          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5 || true
+          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5)
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "name='com.answertraining.quiz'" || { echo "错误：包名不是 com.answertraining.quiz"; exit 1; }
+          echo "$BADGING" | grep -q "答题练习软件" || { echo "错误：应用名不是 答题练习软件"; exit 1; }
 
       - name: 失败诊断（OOM / 磁盘 / 关键日志）
         if: failure()
@@ -198,7 +264,9 @@ jobs:
         with:
           name: phase0-apk
           path: |
+            QuizApp-v1.0.0-release.apk
             **/*.apk
+            android/assets/icon.png
             android/pysidedeploy.spec
             android/assets/quiz.db.sha256
             wheels/*.whl

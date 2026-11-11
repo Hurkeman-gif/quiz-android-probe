@@ -801,6 +801,50 @@ class MobileMainWindow(QWidget):
         self._save_progress_now()
         super().closeEvent(event)
 
+    # ------------------------------------------------------------ 返回键
+    def keyPressEvent(self, event):
+        """Android 物理返回键 / 手势返回：先关弹层，答题页再二次确认退出。"""
+        if event.key() in (Qt.Key_Back, Qt.Key_Escape):
+            if self._handle_back_key():
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _handle_back_key(self):
+        # 1) 有浮层时，返回键只关闭浮层，绝不退出应用
+        for name in ("confirm_panel", "history_detail_panel", "history_panel",
+                     "wrongbook_panel", "backup_panel", "set_panel",
+                     "random_panel", "drawer_panel", "number_panel"):
+            panel = getattr(self, name, None)
+            if panel is not None and panel.isVisible():
+                panel.hide()
+                return True
+        # 2) 完成页：回到答题页第一题
+        if self.stack.currentWidget() is self.finish_view:
+            self._on_review_requested()
+            return True
+        # 3) 答题页：二次确认，防止误触退出
+        if self.session is not None:
+            self._confirm_action = "exit_app"
+            self.confirm_panel.show_confirm(
+                "退出应用",
+                "确认退出练习吗？当前进度已自动保存。",
+                "退出",
+                "继续练习",
+            )
+            self._show_overlay(self.confirm_panel)
+            return True
+        return False
+
+    def _exit_app(self):
+        """用户确认退出：保存进度后关闭应用。"""
+        self._cancel_auto()
+        self._save_progress_now()
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
     # ------------------------------------------------------------ 视图切换
     def _ensure_quiz_view(self):
         """强制回到答题页：跳题/上一题/下一题/切题型都不能残留完成页。"""
@@ -1531,6 +1575,9 @@ class MobileMainWindow(QWidget):
             return
         if action == "manual_submit":
             self._on_manual_submit_confirmed()
+            return
+        if action == "exit_app":
+            self._exit_app()
             return
         if not isinstance(action, tuple):
             return

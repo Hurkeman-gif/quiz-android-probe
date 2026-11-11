@@ -45,9 +45,31 @@ class ErrorWindow(QWidget):
         outer.addWidget(scroll)
 
 
+APP_DISPLAY_NAME = "答题练习软件"
+
+
+def keep_screen_on():
+    """Android：答题过程中保持屏幕常亮，避免自动息屏打断练习。
+
+    非 Android 平台（或 jnius 不可用）时静默跳过。
+    """
+    try:
+        from jnius import autoclass
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        layout_params = autoclass("android.view.WindowManager$LayoutParams")
+        activity.getWindow().addFlags(layout_params.FLAG_KEEP_SCREEN_ON)
+    except Exception:
+        pass
+
+
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("答题练习软件")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    app.setOrganizationName("AnswerTraining")
+    app.setOrganizationDomain("answertraining.com")
+    keep_screen_on()
     try:
         from app.mobile.main_window import MobileMainWindow
 
