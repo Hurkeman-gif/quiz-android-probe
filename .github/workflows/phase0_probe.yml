@@ -256,8 +256,10 @@ jobs:
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/(libQt6Widgets|libQt6Core|libQt6Gui|libpyside6|libshiboken6)' || true
           echo "===== 题库资产打包检查 ====="
           python3 -c "import io,sys,tarfile,zipfile;z=zipfile.ZipFile(sys.argv[1]);d=z.read('assets/private.tar');t=tarfile.open(fileobj=io.BytesIO(d));ns=t.getnames();hit=[n for n in ns if n.endswith('assets/quiz.db')];print('private.tar 内 quiz.db:',hit);sys.exit(0 if hit else 1)" "$APK" || { echo "错误：assets/private.tar 内未找到 quiz.db"; unzip -l "$APK" | head -40; exit 1; }
-          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5)
-          echo "$BADGING"
+          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK")
+          echo "$BADGING" | head -5
+          echo "===== 应用名 / 图标 ====="
+          echo "$BADGING" | grep -E "^application-label|^application-icon|^application:" | head -6
           echo "$BADGING" | grep -q "name='com.answertraining.quiz'" || { echo "错误：包名不是 com.answertraining.quiz"; exit 1; }
           echo "$BADGING" | grep -q "答题练习软件" || { echo "错误：应用名不是 答题练习软件"; exit 1; }
 
