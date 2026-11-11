@@ -197,10 +197,32 @@ class RecordList(QWidget):
         self._velocity *= FLING_DECAY
         if abs(self._velocity) < FLING_MIN * 0.5:
             self._stop_fling()
+            self._snap_to_row()
             return
         step = -self._velocity * (FLING_TICK_MS / 1000.0)
         if not self._set_offset(self._offset + step):
             self._stop_fling()
+            self._snap_to_row()
+
+    def _row_boundaries(self):
+        bounds = [0.0]
+        total = 0.0
+        for height in self._heights:
+            total += height
+            bounds.append(total)
+        return bounds
+
+    def _snap_to_row(self):
+        """滚动结束后对齐到行边界，避免静止时留下半行文字。"""
+        if not self._heights:
+            return
+        bounds = self._row_boundaries()
+        limit = self._max_offset()
+        target = min(bounds, key=lambda value: abs(min(value, limit) - self._offset))
+        target = max(0.0, min(float(target), limit))
+        if abs(target - self._offset) > 0.5:
+            self._offset = target
+            self._refresh()
 
     # ---------------------------------------------------------------- 绘制
     def paintEvent(self, event):
@@ -277,8 +299,10 @@ class RecordList(QWidget):
                 self._selected = index
                 self._refresh()
                 self.itemActivated.emit(index)
-        else:
+        elif abs(self._velocity) > FLING_MIN:
             self._start_fling()
+        else:
+            self._snap_to_row()
         self._press_pos = None
         self._dragging = False
         event.accept()
