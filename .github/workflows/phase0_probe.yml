@@ -220,19 +220,21 @@ jobs:
                  "$PWD/.buildozer/android/platform/build-arm64-v8a/dists" \
                  "$PWD"/quiz-*.apk "$PWD"/*.apk
           python3 "$GITHUB_WORKSPACE/android/tools/patch_p4a_java.py" \
-              --watch --timeout 1800 --marker "$RUNNER_TEMP/p4a_patch_done" \
+              --watch --timeout 3600 --grace 3600 --marker "$RUNNER_TEMP/p4a_patch_done" \
               > "$RUNNER_TEMP/patcher.log" 2>&1 &
           P4A_PATCHER=$!
           "$RUNNER_TEMP/deploy-venv/bin/pyside6-android-deploy"             --config-file pysidedeploy.spec             --name AnswerTraining             --wheel-pyside "$GITHUB_WORKSPACE/wheels/PySide6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --wheel-shiboken "$GITHUB_WORKSPACE/wheels/shiboken6-$QT_VERSION-$QT_VERSION-cp311-cp311-android_aarch64.whl"             --ndk-path "$ANDROID_HOME/ndk/$NDK_VERSION"             --sdk-path "$ANDROID_HOME"             --force             --verbose 2>&1 | tee "$RUNNER_TEMP/deploy.log"
-          wait "$P4A_PATCHER" || true
+          # deploy 结束后停掉补丁看护进程（它要一直守着 dists 副本出现）
+          kill "$P4A_PATCHER" 2>/dev/null || true
+          wait "$P4A_PATCHER" 2>/dev/null || true
           echo "----- patcher.log -----"
           cat "$RUNNER_TEMP/patcher.log" || true
           echo "-----------------------"
-          if [ ! -f "$RUNNER_TEMP/p4a_patch_done" ]; then
-              echo "错误：p4a 的 PythonActivity.java 补丁没有生效（常亮 / 返回键会失效）"
-              exit 1
+          if [ -f "$RUNNER_TEMP/p4a_patch_done" ]; then
+              echo "p4a Java 补丁生效：$(cat "$RUNNER_TEMP/p4a_patch_done")"
+          else
+              echo "警告：看护进程未确认 dists 副本补丁（以下 dex 校验为准）"
           fi
-          echo "p4a Java 补丁生效：$(cat "$RUNNER_TEMP/p4a_patch_done")"
           # 端到端校验：补丁必须真的进了 dex，否则常亮/返回键在真机上依旧失效
           APK_TMP=$(find "$GITHUB_WORKSPACE" -name 'quiz-*-debug.apk' -type f | head -n 1)
           echo "临时 APK：$APK_TMP"

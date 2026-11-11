@@ -204,9 +204,12 @@ def main() -> int:
                 if "/dists/" in path.as_posix():
                     print("PATCH_JAVA dists 副本已补丁，结束等待", flush=True)
                     return 0
-                # 先补到 bootstrap_builds：再守一会儿，等 dists 副本出现也补上
+                # 先补到 bootstrap_builds：继续守着等 dists 副本出现也补上
+                # （dists 副本出现的时间不固定，可能比 deploy 开始晚十几分钟，
+                #  所以这里不提前退出，由 workflow 在 deploy 结束后 kill 本进程）
                 grace_until = time.time() + args.grace
         if done and time.time() > grace_until:
+            print("PATCH_JAVA 等待 dists 副本超时（grace=%ds），退出" % args.grace, flush=True)
             return 0
         if not args.watch or time.time() > deadline:
             print("PATCH_JAVA 未找到可编译的 dists 副本 PythonActivity.java", flush=True)
