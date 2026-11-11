@@ -254,7 +254,7 @@ class PracticeSession:
     # ------------------------------------------------------------- 历史明细
 
     def build_history_record(self, bank_key: str, question_type: str,
-                             source: str = "") -> dict:
+                             source: str = "", set_name: str = "") -> dict:
         """构造 history 表记录。details 每题含题干摘要/答案/正解/结果/是否强制未答/解析。"""
         details = []
         by_id = {q["id"]: q for q in self.questions}
@@ -281,6 +281,7 @@ class PracticeSession:
             "bank_key": bank_key,
             "mode": self.mode,
             "question_type": question_type,
+            "set_name": set_name or "",
             "total_count": st["total_count"],
             "answered_count": st["answered_count"],
             "correct_count": st["correct_count"],

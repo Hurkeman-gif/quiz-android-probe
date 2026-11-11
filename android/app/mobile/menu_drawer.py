@@ -45,8 +45,10 @@ class MenuDrawer(QWidget):
 
     normalRequested = Signal()
     randomRequested = Signal()
+    setRequested = Signal()
     wrongbookRequested = Signal()
     historyRequested = Signal()
+    dataRequested = Signal()
     clearProgressRequested = Signal()
     closeRequested = Signal()
 
@@ -83,6 +85,10 @@ class MenuDrawer(QWidget):
         self.random_button = self._add_item(lay, "随机练习", self.randomRequested)
         self.wrongbook_button = self._add_item(lay, "错题本", self.wrongbookRequested)
         self.history_button = self._add_item(lay, "答题记录", self.historyRequested)
+
+        lay.addSpacing(6)
+        self.set_button = self._add_item(lay, "切换套题", self.setRequested)
+        self.data_button = self._add_item(lay, "数据备份", self.dataRequested)
 
         lay.addSpacing(4)
         self.clear_button = QPushButton("清空当前进度")

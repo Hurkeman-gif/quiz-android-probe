@@ -14,6 +14,7 @@ import traceback
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import database, progress_store, random_picker, wrongbook
+from .. import data_backup, database, progress_store, random_picker, wrongbook
 from ..models import TYPE_LABELS
 from ..session import (
     MODE_NORMAL,
@@ -38,6 +39,7 @@ from .history_panel import HistoryDetailPanel, HistoryPanel
 from .menu_drawer import MenuDrawer, MenuIconButton
 from .nav_panel import NumberPanel
 from .quiz_view import MobileQuizView
+from .set_panel import BackupPanel, SetPickerPanel
 from .random_panel import SCOPE_ALL, RandomSetupPanel
 from .wrongbook_panel import WrongbookPanel
 
@@ -477,6 +479,13 @@ QCheckBox#allCheck {
 #randomHint[state="error"] {
     color: #DC2626;
 }
+#backupStatus {
+    font-size: 10.5pt;
+    color: #15803D;
+}
+#backupStatus[state="error"] {
+    color: #DC2626;
+}
 """
 
 
@@ -514,8 +523,10 @@ class MobileMainWindow(QWidget):
         self.drawer_panel = MenuDrawer(self)
         self.drawer_panel.normalRequested.connect(self._on_drawer_normal)
         self.drawer_panel.randomRequested.connect(self._on_drawer_random)
+        self.drawer_panel.setRequested.connect(self.open_set_panel)
         self.drawer_panel.wrongbookRequested.connect(self.open_wrongbook_panel)
         self.drawer_panel.historyRequested.connect(self.open_history_panel)
+        self.drawer_panel.dataRequested.connect(self.open_backup_panel)
         self.drawer_panel.clearProgressRequested.connect(
             self._on_clear_progress_requested)
         self.drawer_panel.closeRequested.connect(self.close_overlays)
@@ -536,6 +547,16 @@ class MobileMainWindow(QWidget):
         self.history_panel.closeRequested.connect(self.close_overlays)
         self.history_detail_panel = HistoryDetailPanel(self)
         self.history_detail_panel.closeRequested.connect(self.close_history_detail)
+        # 切换套题 / 数据备份
+        self.set_panel = SetPickerPanel(self)
+        self.set_panel.setChosen.connect(self._on_set_chosen)
+        self.set_panel.closeRequested.connect(self.close_overlays)
+        self.backup_panel = BackupPanel(self)
+        self.backup_panel.exportRequested.connect(self._on_export_requested)
+        self.backup_panel.exportAsRequested.connect(self._on_export_as_requested)
+        self.backup_panel.importRequested.connect(self._on_import_requested)
+        self.backup_panel.pickFileRequested.connect(self._on_pick_backup_file)
+        self.backup_panel.closeRequested.connect(self.close_overlays)
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self._on_app_state_changed)
@@ -664,7 +685,16 @@ class MobileMainWindow(QWidget):
             database.open_bank(bank_path)
             self._bank_key = os.path.basename(bank_path) or "quiz.db"
             sets = database.list_sets()
-            self.set_name = sets[0] if sets else None
+            # 恢复上次使用的套题（进度/错题/记录都按套题隔离）
+            saved_set = ""
+            try:
+                saved_set = progress_store.get_setting("last_set", "") or ""
+            except Exception:
+                traceback.print_exc()
+            if saved_set and saved_set in sets:
+                self.set_name = saved_set
+            else:
+                self.set_name = sets[0] if sets else None
             self._question_cache = {}
             start = None
             for qtype in self.TYPE_ORDER:
@@ -1035,7 +1065,8 @@ class MobileMainWindow(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         for name in ("number_panel", "confirm_panel", "drawer_panel",
-                     "random_panel", "wrongbook_panel", "history_panel",
+                     "random_panel", "set_panel", "backup_panel",
+                     "wrongbook_panel", "history_panel",
                      "history_detail_panel"):
             panel = getattr(self, name, None)
             if panel is not None and panel.isVisible():
@@ -1048,7 +1079,8 @@ class MobileMainWindow(QWidget):
         panel.show()
 
     def close_overlays(self):
-        for panel in (self.drawer_panel, self.random_panel, self.wrongbook_panel,
+        for panel in (self.drawer_panel, self.random_panel, self.set_panel,
+                      self.backup_panel, self.wrongbook_panel,
                       self.history_panel, self.history_detail_panel):
             panel.hide()
 
@@ -1063,8 +1095,7 @@ class MobileMainWindow(QWidget):
     def _drawer_context(self):
         """抽屉副标题：当前题库/题型/进度，清空按钮只在有普通练习进度时可用。"""
         parts = []
-        if self.set_name:
-            parts.append(str(self.set_name))
+        parts.append(str(self.set_name) if self.set_name else "全部套题")
         mode = self.session.mode if self.session else ""
         if mode == MODE_RANDOM:
             parts.append(f"随机练习 · {self.session.count()} 题")
@@ -1128,6 +1159,172 @@ class MobileMainWindow(QWidget):
         self.quiz_view.set_session(self.session)
         self._refresh_chrome()
 
+    # ------------------------------------------------------------ 切换套题
+    def _set_items(self):
+        """[{name, count}]：套题名与题目数量（只读查询题库）。"""
+        items = []
+        try:
+            names = database.list_sets()
+        except Exception:
+            traceback.print_exc()
+            return items
+        for name in names:
+            count = 0
+            try:
+                count = int(database.count_questions(set_name=name))
+            except TypeError:
+                try:
+                    count = int(database.count_questions(name))
+                except Exception:
+                    count = 0
+            except Exception:
+                count = 0
+            items.append({"name": name, "count": count})
+        return items
+
+    def open_set_panel(self):
+        self._cancel_auto()
+        self.close_overlays()
+        self.set_panel.set_rows(self._set_items(), current=self.set_name)
+        self._show_overlay(self.set_panel)
+
+    def _on_set_chosen(self, name):
+        self.close_overlays()
+        self.switch_set(name)
+
+    def switch_set(self, name):
+        """切换套题：先保存当前套题进度，再用新套题重建题型与会话。
+
+        进度、错题本、答题记录都带套题标记，所以切回来时能恢复到原处。
+        """
+        target = name or None
+        if target == self.set_name:
+            return
+        self._cancel_auto()
+        self._save_progress_now()
+        self.close_number_panel()
+        self.close_overlays()
+        self.set_name = target
+        try:
+            progress_store.set_setting("last_set", target or "")
+        except Exception:
+            traceback.print_exc()
+        self._question_cache = {}
+        self.session = None
+        self.current_type = None
+        start = None
+        for qtype in self.TYPE_ORDER:
+            if self._questions_for_type(qtype):
+                start = qtype
+                break
+        if start is None:
+            self._ensure_quiz_view()
+            self.quiz_view.show_message("该套题没有题目")
+            self._refresh_chrome()
+            return
+        self.select_type(start)
+
+    # ------------------------------------------------------------ 数据备份
+    def open_backup_panel(self):
+        self._cancel_auto()
+        self.close_overlays()
+        self._refresh_backup_panel()
+        self._show_overlay(self.backup_panel)
+
+    def _refresh_backup_panel(self, message=""):
+        directory = ""
+        items = []
+        try:
+            directory = data_backup.backup_dir()
+            items = data_backup.list_backups()
+        except Exception as exc:
+            traceback.print_exc()
+            directory = "不可用：%s" % exc
+        self.backup_panel.set_backups(directory, items, message)
+
+    def _on_export_requested(self):
+        try:
+            info = data_backup.export_default()
+        except Exception as exc:
+            traceback.print_exc()
+            self.backup_panel.show_result("导出失败：%s" % exc, False)
+            return
+        counts = info.get("counts") or {}
+        self._refresh_backup_panel()
+        self.backup_panel.show_result(
+            "已导出 %s（进度 %d · 记录 %d · 错题 %d）" % (
+                os.path.basename(info.get("path") or ""),
+                counts.get("progress", 0), counts.get("history", 0),
+                counts.get("wrongbook", 0)), True)
+
+    def _on_export_as_requested(self):
+        """按用户选择的位置导出（系统保存对话框）。"""
+        try:
+            directory = data_backup.backup_dir()
+        except Exception:
+            directory = os.path.expanduser("~")
+        dialog = QFileDialog(self, "导出数据")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setFileMode(QFileDialog.AnyFile)
+        dialog.setNameFilter("备份文件 (*.json)")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.selectFile(os.path.join(directory, data_backup.default_filename()))
+        # Android 上 Qt 自绘文件对话框可能收不到触摸，20 秒兜底关闭避免卡死
+        QTimer.singleShot(20000, dialog.reject)
+        if not dialog.exec():
+            return
+        files = dialog.selectedFiles()
+        if not files:
+            return
+        try:
+            info = data_backup.export_to(files[0])
+        except Exception as exc:
+            traceback.print_exc()
+            self.backup_panel.show_result("导出失败：%s" % exc, False)
+            return
+        self._refresh_backup_panel()
+        self.backup_panel.show_result(
+            "已导出 %s" % os.path.basename(info.get("path") or ""), True)
+
+    def _on_pick_backup_file(self):
+        """从任意位置选一个备份 JSON 导入（系统打开对话框）。"""
+        try:
+            directory = data_backup.backup_dir()
+        except Exception:
+            directory = os.path.expanduser("~")
+        dialog = QFileDialog(self, "导入数据")
+        dialog.setAcceptMode(QFileDialog.AcceptOpen)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+        dialog.setNameFilter("备份文件 (*.json)")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.selectFile(directory)
+        QTimer.singleShot(20000, dialog.reject)
+        if not dialog.exec():
+            return
+        files = dialog.selectedFiles()
+        if files:
+            self._on_import_requested(files[0])
+
+    def _on_import_requested(self, path):
+        result = data_backup.import_file(path)
+        if not result.get("ok"):
+            errors = "；".join(result.get("errors") or ["未知错误"])
+            self.backup_panel.show_result("导入失败：" + errors, False)
+            return
+        stats = result.get("stats") or {}
+        progress_stats = stats.get("progress") or {}
+        history_stats = stats.get("history") or {}
+        wrong_stats = stats.get("wrongbook") or {}
+        text = "导入完成：进度 %d 条 · 记录 %d 条 · 错题 %d 条" % (
+            int(progress_stats.get("changed") or 0),
+            int(history_stats.get("added") or 0),
+            int(wrong_stats.get("changed") or 0))
+        # 进度可能被合并更新，重载当前会话让界面与数据一致
+        if self.session is not None and self.session.mode == MODE_NORMAL and self.current_type:
+            self._start_normal_session(self.current_type)
+        self._refresh_backup_panel()
+        self.backup_panel.show_result(text, True)
+
     # ------------------------------------------------------------ 清空进度
     def _on_clear_progress_requested(self):
         self.close_overlays()
@@ -1153,7 +1350,7 @@ class MobileMainWindow(QWidget):
     def _wrongbook_rows(self):
         """错题本记录 + 题库只读查询题干（题库里已不存在的题标记失效）。"""
         try:
-            records = wrongbook.list_records()
+            records = wrongbook.list_records(set_name=self.set_name)
         except Exception:
             traceback.print_exc()
             return []
@@ -1198,7 +1395,8 @@ class MobileMainWindow(QWidget):
                 answer = self.session.answers.get(qid) or {}
                 wrongbook.record_wrong(
                     qid, answer.get("selected") or [],
-                    question.get("answer") or [], source=self.session.mode)
+                    question.get("answer") or [], source=self.session.mode,
+                    set_name=self.set_name or "")
         except Exception as exc:
             traceback.print_exc()
             self.stats_label.setText(f"错题本更新失败：{exc}")
@@ -1251,7 +1449,7 @@ class MobileMainWindow(QWidget):
 
     def _do_wrongbook_clear(self):
         try:
-            wrongbook.clear_all()
+            wrongbook.clear_all(set_name=self.set_name)
         except Exception as exc:
             traceback.print_exc()
             self.stats_label.setText(f"错题本清空失败：{exc}")
@@ -1263,7 +1461,7 @@ class MobileMainWindow(QWidget):
         self._cancel_auto()
         self.close_overlays()
         try:
-            rows = progress_store.list_history()
+            rows = progress_store.list_history(set_name=self.set_name)
         except Exception:
             traceback.print_exc()
             rows = []
@@ -1318,7 +1516,8 @@ class MobileMainWindow(QWidget):
             question_type = self.current_type or ""
         try:
             record = self.session.build_history_record(
-                self._bank_key, question_type, source=self.session.mode)
+                self._bank_key, question_type, source=self.session.mode,
+                set_name=self.set_name or "")
             progress_store.record_history(record)
             self.session.history_recorded = True
         except Exception:

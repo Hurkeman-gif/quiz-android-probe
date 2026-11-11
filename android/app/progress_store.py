@@ -3,8 +3,10 @@
 
 - 绝不创建/修改/删除题库文件；progress.db 与题库完全分离；
 - practice_progress：普通练习进度，按 题库(bank_key)+题型+套题 唯一；
-- history：答题历史，session_uuid 唯一，只追加（本步只做进度，历史接口保留）；
-- 随机练习与错题本练习不调用 save_progress。
+- history：答题历史，session_uuid 唯一，只追加；带 set_name 便于按套题隔离；
+- app_settings：少量应用设置（上次选择的套题等），与练习数据同库；
+- 随机练习与错题本练习不调用 save_progress，但完成时仍写 history；
+- dump_*/merge_* 供 JSON 备份（导出/导入）使用。
 
 文件位置：应用私有数据目录（Android 上是
 /data/data/<包名>/files/app 下的 progress.db），与题库同目录但互不影响。
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS history (
     bank_key TEXT,
     mode TEXT NOT NULL,
     question_type TEXT,
+    set_name TEXT NOT NULL DEFAULT '',
     total_count INTEGER,
     answered_count INTEGER,
     correct_count INTEGER,
@@ -43,6 +46,10 @@ CREATE TABLE IF NOT EXISTS history (
     score_rate REAL,
     details_json TEXT NOT NULL,
     source TEXT
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -73,6 +80,22 @@ def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _table_columns(conn, table):
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+    except sqlite3.Error:
+        return set()
+
+
+def _migrate(conn):
+    """老版本 progress.db 升级：history 补 set_name（不删任何数据）。"""
+    cols = _table_columns(conn, "history")
+    if cols and "set_name" not in cols:
+        conn.execute(
+            "ALTER TABLE history ADD COLUMN set_name TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+
+
 def ensure():
     """创建 progress.db 与表（独立文件，绝不触碰题库）。"""
     path = get_progress_path()
@@ -81,6 +104,7 @@ def ensure():
         os.makedirs(d, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(TABLE_SQL)
+        _migrate(conn)
         conn.commit()
 
 
@@ -88,7 +112,44 @@ def _connect():
     path = get_progress_path()
     if not os.path.exists(path):
         ensure()
-    return sqlite3.connect(path)
+    conn = sqlite3.connect(path)
+    _migrate(conn)
+    return conn
+
+
+# --------------------------------------------------------------- 应用设置
+
+def set_setting(key, value):
+    """记录一条轻量设置（如上次选择的套题），失败不影响主流程。"""
+    try:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), "" if value is None else str(value)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def get_setting(key, default=""):
+    try:
+        path = get_progress_path()
+        if not os.path.exists(path):
+            return default
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key=?",
+                (str(key),)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else default
+    except Exception:
+        return default
 
 
 # --------------------------------------------------------------- 普通练习进度
@@ -145,6 +206,22 @@ def delete_progress(bank_key, question_type, set_name=""):
         conn.close()
 
 
+def list_progress_sets(bank_key):
+    """某题库下已有进度的 (题型, 套题) 列表（调试/迁移用）。"""
+    path = get_progress_path()
+    if not os.path.exists(path):
+        return []
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT question_type, set_name FROM practice_progress "
+            "WHERE bank_key=? ORDER BY set_name, question_type",
+            (bank_key,)).fetchall()
+    finally:
+        conn.close()
+    return [(r[0], r[1]) for r in rows]
+
+
 # --------------------------------------------------------------- 历史记录
 
 def record_history(record):
@@ -154,14 +231,15 @@ def record_history(record):
         cur = conn.execute(
             """INSERT OR IGNORE INTO history
                (session_uuid, created_at, bank_key, mode, question_type,
-                total_count, answered_count, correct_count, wrong_count,
-                unanswered_count, score_rate, details_json, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                set_name, total_count, answered_count, correct_count,
+                wrong_count, unanswered_count, score_rate, details_json, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(record.get("session_uuid") or ""),
              record.get("created_at") or _now(),
              record.get("bank_key") or "",
              record.get("mode") or "normal",
              record.get("question_type") or "",
+             record.get("set_name") or "",
              int(record.get("total_count") or 0),
              int(record.get("answered_count") or 0),
              int(record.get("correct_count") or 0),
@@ -188,6 +266,7 @@ def _row_to_dict(row) -> dict:
         "bank_key": row["bank_key"] or "",
         "mode": row["mode"],
         "question_type": row["question_type"] or "",
+        "set_name": (row["set_name"] or "") if "set_name" in row.keys() else "",
         "total_count": int(row["total_count"] or 0),
         "answered_count": int(row["answered_count"] or 0),
         "correct_count": int(row["correct_count"] or 0),
@@ -199,8 +278,8 @@ def _row_to_dict(row) -> dict:
     }
 
 
-def list_history(mode=None, question_type=None):
-    """历史列表（时间倒序）。进度文件不存在返回空列表。"""
+def list_history(mode=None, question_type=None, set_name=None):
+    """历史列表（时间倒序）。set_name=None 表示不过滤（全部套题）。"""
     path = get_progress_path()
     if not os.path.exists(path):
         return []
@@ -215,6 +294,9 @@ def list_history(mode=None, question_type=None):
         if question_type:
             conds.append("question_type=?")
             args.append(question_type)
+        if set_name is not None:
+            conds.append("set_name=?")
+            args.append(set_name or "")
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY id DESC"
@@ -248,23 +330,153 @@ def delete_history(history_id):
         conn.close()
 
 
-def clear_history():
-    """清空全部历史（调用前必须二次确认；只影响 history 表）。"""
+def clear_history(set_name=None):
+    """清空历史（set_name=None 清全部，否则只清该套题）。"""
     conn = _connect()
     try:
-        conn.execute("DELETE FROM history")
+        if set_name is None:
+            conn.execute("DELETE FROM history")
+        else:
+            conn.execute("DELETE FROM history WHERE set_name=?",
+                         (set_name or "",))
         conn.commit()
     finally:
         conn.close()
 
 
-def count_history():
+def count_history(set_name=None):
     path = get_progress_path()
     if not os.path.exists(path):
         return 0
     conn = sqlite3.connect(path)
     try:
-        row = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()
-        return int(row[0])
+        if set_name is None:
+            row = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM history WHERE set_name=?",
+                (set_name or "",)).fetchone()
+        return int(row[0] if row else 0)
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------- 备份导出/导入
+
+def dump_progress():
+    """导出全部普通练习进度（JSON 可序列化）。"""
+    path = get_progress_path()
+    if not os.path.exists(path):
+        return []
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT bank_key, question_type, set_name, session_json, updated_at "
+            "FROM practice_progress ORDER BY set_name, question_type").fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r[3] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        out.append({
+            "bank_key": r[0] or "",
+            "question_type": r[1] or "",
+            "set_name": r[2] or "",
+            "session": payload,
+            "updated_at": r[4] or "",
+        })
+    return out
+
+
+def dump_history():
+    """导出全部答题历史（含 details）。"""
+    return list_history()
+
+
+def merge_progress(items):
+    """导入进度：同键保留 updated_at 较新的一条。返回 (新增+更新, 跳过)。"""
+    if not items:
+        return 0, 0
+    conn = _connect()
+    changed = 0
+    skipped = 0
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            bank_key = str(item.get("bank_key") or "")
+            qtype = str(item.get("question_type") or "")
+            set_name = str(item.get("set_name") or "")
+            session = item.get("session")
+            if not bank_key or not qtype or not isinstance(session, dict):
+                skipped += 1
+                continue
+            updated_at = str(item.get("updated_at") or _now())
+            cur = conn.execute(
+                """INSERT INTO practice_progress
+                   (bank_key, question_type, set_name, session_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(bank_key, question_type, set_name)
+                   DO UPDATE SET session_json=excluded.session_json,
+                                 updated_at=excluded.updated_at
+                   WHERE excluded.updated_at >= practice_progress.updated_at""",
+                (bank_key, qtype, set_name,
+                 json.dumps(session, ensure_ascii=False), updated_at))
+            if cur.rowcount > 0:
+                changed += 1
+            else:
+                skipped += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return changed, skipped
+
+
+def merge_history(items):
+    """导入历史：按 session_uuid 去重（已存在则跳过）。返回 (新增, 跳过)。"""
+    if not items:
+        return 0, 0
+    conn = _connect()
+    added = 0
+    skipped = 0
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            uuid = str(item.get("session_uuid") or "")
+            if not uuid:
+                skipped += 1
+                continue
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO history
+                   (session_uuid, created_at, bank_key, mode, question_type,
+                    set_name, total_count, answered_count, correct_count,
+                    wrong_count, unanswered_count, score_rate, details_json,
+                    source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uuid, str(item.get("created_at") or _now()),
+                 str(item.get("bank_key") or ""),
+                 str(item.get("mode") or "normal"),
+                 str(item.get("question_type") or ""),
+                 str(item.get("set_name") or ""),
+                 int(item.get("total_count") or 0),
+                 int(item.get("answered_count") or 0),
+                 int(item.get("correct_count") or 0),
+                 int(item.get("wrong_count") or 0),
+                 int(item.get("unanswered_count") or 0),
+                 float(item.get("score_rate") or 0.0),
+                 json.dumps(item.get("details") or [], ensure_ascii=False),
+                 str(item.get("source") or "")))
+            if cur.rowcount > 0:
+                added += 1
+            else:
+                skipped += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return added, skipped
