@@ -5,14 +5,14 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..session import MODE_LABELS, TYPE_LABELS
-from .overlay import BACKDROP, OverlayCard, make_record_list
+from .overlay import BACKDROP, OverlayCard
+from .record_list import RecordList
 
 
 def display_accuracy(record) -> str:
@@ -79,7 +79,7 @@ class HistoryPanel(QWidget):
         header.addWidget(self.close_top_button)
         lay.addLayout(header)
 
-        self.list = make_record_list(self.card)
+        self.list = RecordList(self.card)
         lay.addWidget(self.list, 1)
 
         self.empty_label = QLabel(
@@ -126,7 +126,7 @@ class HistoryPanel(QWidget):
     # ------------------------------------------------------------------ API
     def set_rows(self, rows):
         self._rows = list(rows or [])
-        self.list.clear()
+        self.list.set_rows([])
         has_rows = bool(self._rows)
         self.count_label.setText("共 " + str(len(self._rows)) + " 条")
         self.list.setVisible(has_rows)
@@ -135,32 +135,33 @@ class HistoryPanel(QWidget):
             button.setEnabled(has_rows)
         if not has_rows:
             return
+        items = []
         for rec in self._rows:
             mode_label = MODE_LABELS.get(rec.get("mode") or "",
                                          rec.get("mode") or "")
             qtype = rec.get("question_type") or ""
             type_label = TYPE_LABELS.get(qtype, qtype) if qtype else "混合题型"
-            text = (str(rec.get("created_at") or "") + "\n" + mode_label + " · "
-                    + type_label + " · 共 " + str(rec.get("total_count") or 0)
-                    + " 题 · 正确率 " + display_accuracy(rec))
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, int(rec.get("id") or 0))
-            self.list.addItem(item)
-        self.list.clearSelection()
-        self.list.setCurrentRow(-1)
+            subtitle = (mode_label + " · " + type_label + " · 共 "
+                        + str(rec.get("total_count") or 0) + " 题 · 正确率 "
+                        + display_accuracy(rec))
+            items.append({
+                "lines": [str(rec.get("created_at") or ""), subtitle],
+                "payload": int(rec.get("id") or 0),
+            })
+        self.list.set_rows(items)
 
     def selected_record(self):
-        row = self.list.currentRow()
+        row = self.list.selected_index()
         if 0 <= row < len(self._rows):
             return self._rows[row]
         return None
 
     def current_id(self):
-        item = self.list.currentItem()
-        if item is None:
+        payload = self.list.selected_payload()
+        if payload is None:
             return None
         try:
-            return int(item.data(Qt.UserRole))
+            return int(payload)
         except (TypeError, ValueError):
             return None
 
@@ -236,7 +237,7 @@ class HistoryDetailPanel(QWidget):
         self.info_label.setWordWrap(True)
         lay.addWidget(self.info_label)
 
-        self.list = make_record_list(self.card)
+        self.list = RecordList(self.card)
         lay.addWidget(self.list, 1)
 
         self.close_button = QPushButton("关闭")
@@ -259,7 +260,7 @@ class HistoryDetailPanel(QWidget):
             + type_label + " · 共 " + str(record.get("total_count") or 0)
             + " 题 · 正确率 " + display_accuracy(record))
         details = record.get("details") or []
-        self.list.clear()
+        items = []
         for i, d in enumerate(details, 1):
             forced = bool(d.get("is_forced_unanswered"))
             if forced:
@@ -268,15 +269,17 @@ class HistoryDetailPanel(QWidget):
                 result = "正确"
             else:
                 result = "错误"
-            text = (str(i) + ". " + (d.get("stem_summary") or "") + "\n"
-                    + "你的答案 " + _join_keys(d.get("selected"))
-                    + " ｜ 正确答案 " + _join_keys(d.get("correct_answer"))
-                    + " ｜ " + result)
+            lines = [
+                str(i) + ". " + (d.get("stem_summary") or ""),
+                "你的答案 " + _join_keys(d.get("selected"))
+                + " ｜ 正确答案 " + _join_keys(d.get("correct_answer"))
+                + " ｜ " + result,
+            ]
             explanation = (d.get("explanation") or "").strip()
             if explanation:
-                text += "\n解析：" + explanation
-            self.list.addItem(QListWidgetItem(text))
-        self.list.verticalScrollBar().setValue(0)
+                lines.append("解析：" + explanation)
+            items.append({"lines": lines, "payload": None})
+        self.list.set_rows(items)
 
     def paintEvent(self, event):
         painter = QPainter(self)

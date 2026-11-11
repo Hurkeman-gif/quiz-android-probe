@@ -381,19 +381,9 @@ QPushButton#panelDanger:disabled {
     background: #F9FAFB;
     border: 1px solid #E5E7EB;
 }
-QListWidget#recordList {
-    background: transparent;
+QWidget#recordList {
+    background: #FFFFFF;
     border: none;
-    font-size: 11.5pt;
-    color: #1F2937;
-}
-QListWidget#recordList::item {
-    padding: 9px 4px;
-    border-bottom: 1px solid #E5E7EB;
-}
-QListWidget#recordList::item:selected {
-    background: #E8F1FF;
-    color: #1D4ED8;
 }
 """
 

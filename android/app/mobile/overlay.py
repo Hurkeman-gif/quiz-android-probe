@@ -6,7 +6,7 @@ Android 上 QMessageBox / QDialog 会另开窗口，触摸事件投递不到按�
 """
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath
-from PySide6.QtWidgets import QListWidget, QWidget
+from PySide6.QtWidgets import QWidget
 
 BACKDROP = QColor(17, 24, 39, 140)
 CARD_BG = QColor("#FFFFFF")
@@ -30,18 +30,4 @@ class OverlayCard(QWidget):
         super().paintEvent(event)
 
 
-def make_record_list(parent=None) -> QListWidget:
-    """统一样式的记录列表。
 
-    滚动时整列表重绘（repaint）：Android 上只提交局部脏区会让行文字叠影。
-    """
-    lst = QListWidget(parent)
-    lst.setObjectName("recordList")
-    lst.setWordWrap(True)
-    lst.setUniformItemSizes(False)
-    lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    lst.setSelectionMode(QListWidget.SingleSelection)
-    lst.setFocusPolicy(Qt.NoFocus)
-    lst.verticalScrollBar().valueChanged.connect(
-        lambda _value, widget=lst: widget.viewport().repaint())
-    return lst

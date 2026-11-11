@@ -5,14 +5,14 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..session import TYPE_LABELS
-from .overlay import BACKDROP, OverlayCard, make_record_list
+from .overlay import BACKDROP, OverlayCard
+from .record_list import RecordList
 
 
 class WrongbookPanel(QWidget):
@@ -58,7 +58,7 @@ class WrongbookPanel(QWidget):
         header.addWidget(self.close_button)
         lay.addLayout(header)
 
-        self.list = make_record_list(self.card)
+        self.list = RecordList(self.card)
         lay.addWidget(self.list, 1)
 
         self.empty_label = QLabel(
@@ -100,7 +100,7 @@ class WrongbookPanel(QWidget):
     def set_rows(self, rows):
         """rows: [{question_id, stem, type, wrong_count, missing}]"""
         self._rows = list(rows or [])
-        self.list.clear()
+        self.list.set_rows([])
         has_rows = bool(self._rows)
         self.count_label.setText("共 " + str(len(self._rows)) + " 题")
         self.list.setVisible(has_rows)
@@ -113,29 +113,30 @@ class WrongbookPanel(QWidget):
             self.empty_label.setText(
                 "错题本为空\n在普通练习中答错的题目会自动收录到这里")
             return
+        items = []
         for i, row in enumerate(self._rows, 1):
             type_label = TYPE_LABELS.get(row.get("type") or "",
                                          row.get("type") or "")
             stem = row.get("stem") or ""
             if row.get("missing"):
                 stem = "（题库中已不存在该题）"
-            text = str(i) + ". " + stem + "\n答错 " + str(row.get("wrong_count") or 0) + " 次"
+            subtitle = "答错 " + str(row.get("wrong_count") or 0) + " 次"
             if type_label:
-                text += " · " + type_label
+                subtitle += " · " + type_label
             if row.get("missing"):
-                text += " · 无法练习"
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, int(row["question_id"]))
-            self.list.addItem(item)
-        self.list.clearSelection()
-        self.list.setCurrentRow(-1)
+                subtitle += " · 无法练习"
+            items.append({
+                "lines": [str(i) + ". " + stem, subtitle],
+                "payload": int(row["question_id"]),
+            })
+        self.list.set_rows(items)
 
     def selected_question_id(self):
-        item = self.list.currentItem()
-        if item is None:
+        payload = self.list.selected_payload()
+        if payload is None:
             return None
         try:
-            return int(item.data(Qt.UserRole))
+            return int(payload)
         except (TypeError, ValueError):
             return None
 
